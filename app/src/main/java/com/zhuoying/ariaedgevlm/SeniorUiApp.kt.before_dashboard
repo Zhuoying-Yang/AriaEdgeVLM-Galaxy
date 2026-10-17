@@ -1,0 +1,1580 @@
+package com.zhuoying.ariaedgevlm
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+private val SeniorBlue = Color(0xFF2854C7)
+private val SeniorLightBlue = Color(0xFFF0F4FF)
+private val SeniorCard = Color(0xFFF8F9FB)
+private val SeniorBorder = Color(0xFFE8EAF0)
+private val SeniorSecondary = Color(0xFF697386)
+private val SeniorGreen = Color(0xFF22A447)
+
+private enum class SeniorScreen {
+    HOME,
+    ADD_PERSON,
+    JEMMA_DETAIL,
+    SARAH_DETAIL,
+    FAMILY_MEMORY,
+    GROCERY_LIST,
+    MEMORY_ALERT,
+    SAVED_MEMORY,
+    RECOGNITION
+}
+
+@Composable
+fun SeniorUiApp() {
+    var screen by remember {
+        mutableStateOf(SeniorScreen.HOME)
+    }
+
+    var recognitionName by remember {
+        mutableStateOf("Jemma")
+    }
+
+    var recognitionRelationship by remember {
+        mutableStateOf("Your wife")
+    }
+
+    val groceryItems = remember {
+        mutableStateListOf(
+            "Eggs",
+            "Sourdough bread",
+            "Strawberries",
+            "Oat milk",
+            "Spinach"
+        )
+    }
+
+    val groceryMemoryItems = remember {
+        mutableStateListOf<String>()
+    }
+
+    val groceryChecked = remember {
+        mutableStateMapOf<String, Boolean>()
+    }
+
+    fun go(destination: SeniorScreen) {
+        screen = destination
+    }
+
+    BackHandler(
+        enabled = screen != SeniorScreen.HOME
+    ) {
+        screen = when (screen) {
+            SeniorScreen.ADD_PERSON,
+            SeniorScreen.JEMMA_DETAIL,
+            SeniorScreen.SARAH_DETAIL,
+            SeniorScreen.FAMILY_MEMORY,
+            SeniorScreen.MEMORY_ALERT ->
+                SeniorScreen.HOME
+
+            SeniorScreen.GROCERY_LIST ->
+                SeniorScreen.FAMILY_MEMORY
+
+            SeniorScreen.SAVED_MEMORY ->
+                SeniorScreen.MEMORY_ALERT
+
+            SeniorScreen.RECOGNITION ->
+                SeniorScreen.HOME
+
+            SeniorScreen.HOME ->
+                SeniorScreen.HOME
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.White
+    ) {
+        when (screen) {
+            SeniorScreen.HOME -> {
+                ImportantPeopleScreen(
+                    onAdd = {
+                        go(SeniorScreen.ADD_PERSON)
+                    },
+                    onJemma = {
+                        go(SeniorScreen.JEMMA_DETAIL)
+                    },
+                    onSarah = {
+                        go(SeniorScreen.SARAH_DETAIL)
+                    },
+                    onElliot = {
+                        go(SeniorScreen.FAMILY_MEMORY)
+                    },
+                    onMemoryAlert = {
+                        go(SeniorScreen.MEMORY_ALERT)
+                    }
+                )
+            }
+
+            SeniorScreen.ADD_PERSON -> {
+                AddPersonDemoScreen(
+                    onBack = {
+                        go(SeniorScreen.HOME)
+                    },
+                    onSave = {
+                        go(SeniorScreen.JEMMA_DETAIL)
+                    }
+                )
+            }
+
+            SeniorScreen.JEMMA_DETAIL -> {
+                SeniorPersonDetailScreen(
+                    name = "Jemma",
+                    relationship = "Your wife",
+                    note = "Lives with you in Boston.",
+                    imageRes = R.drawable.jemma,
+                    initials = null,
+                    onBack = {
+                        go(SeniorScreen.HOME)
+                    },
+                    onRecognition = {
+                        recognitionName = "Jemma"
+                        recognitionRelationship = "Your wife"
+                        go(SeniorScreen.RECOGNITION)
+                    }
+                )
+            }
+
+            SeniorScreen.SARAH_DETAIL -> {
+                SeniorPersonDetailScreen(
+                    name = "Sarah",
+                    relationship = "Your daughter",
+                    note = "Works as a nurse at Mass General.",
+                    imageRes = null,
+                    initials = "SA",
+                    onBack = {
+                        go(SeniorScreen.HOME)
+                    },
+                    onRecognition = {
+                        recognitionName = "Sarah"
+                        recognitionRelationship = "Your daughter"
+                        go(SeniorScreen.RECOGNITION)
+                    }
+                )
+            }
+
+            SeniorScreen.FAMILY_MEMORY -> {
+                FamilyMemoryDemoScreen(
+                    onBack = {
+                        go(SeniorScreen.HOME)
+                    },
+                    onShoppingList = {
+                        val memoryItems = listOf(
+                            "Cinnamon raisin bagels",
+                            "Plain cream cheese"
+                        )
+
+                        memoryItems.forEach { item ->
+                            if (item !in groceryItems) {
+                                groceryItems.add(item)
+                            }
+
+                            if (item !in groceryMemoryItems) {
+                                groceryMemoryItems.add(item)
+                            }
+
+                            if (item !in groceryChecked) {
+                                groceryChecked[item] = false
+                            }
+                        }
+
+                        go(SeniorScreen.GROCERY_LIST)
+                    }
+                )
+            }
+
+            SeniorScreen.GROCERY_LIST -> {
+                GroceryListDemoScreen(
+                    items = groceryItems,
+                    memoryItems = groceryMemoryItems,
+                    checked = groceryChecked,
+                    onBack = {
+                        go(SeniorScreen.FAMILY_MEMORY)
+                    },
+                    onReminder = {
+                        go(SeniorScreen.MEMORY_ALERT)
+                    }
+                )
+            }
+
+            SeniorScreen.MEMORY_ALERT -> {
+                MemoryAlertDemoScreen(
+                    onDismiss = {
+                        go(SeniorScreen.HOME)
+                    },
+                    onView = {
+                        go(SeniorScreen.SAVED_MEMORY)
+                    }
+                )
+            }
+
+            SeniorScreen.SAVED_MEMORY -> {
+                SavedMemoryDemoScreen(
+                    onBack = {
+                        go(SeniorScreen.MEMORY_ALERT)
+                    },
+                    onHome = {
+                        go(SeniorScreen.HOME)
+                    }
+                )
+            }
+
+            SeniorScreen.RECOGNITION -> {
+                RecognitionDemoScreen(
+                    name = recognitionName,
+                    relationship = recognitionRelationship,
+                    onBack = {
+                        go(SeniorScreen.HOME)
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeniorHeader(
+    title: String,
+    onBack: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = 20.dp,
+                vertical = 18.dp
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier.width(48.dp)
+        ) {
+            if (onBack != null) {
+                Text(
+                    text = "‹",
+                    fontSize = 38.sp,
+                    modifier = Modifier.clickable {
+                        onBack()
+                    }
+                )
+            }
+        }
+
+        Text(
+            text = title,
+            fontSize = 19.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f)
+        )
+
+        Spacer(
+            modifier = Modifier.width(48.dp)
+        )
+    }
+}
+
+@Composable
+private fun SeniorPrimaryButton(
+    text: String,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = SeniorBlue
+        )
+    ) {
+        Text(
+            text = text,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun SeniorSecondaryButton(
+    text: String,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(
+            1.dp,
+            SeniorBorder
+        )
+    ) {
+        Text(
+            text = text,
+            color = SeniorBlue,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
+private fun SeniorAvatar(
+    imageRes: Int? = null,
+    initials: String? = null,
+    size: Int = 58
+) {
+    Box(
+        modifier = Modifier
+            .size(size.dp)
+            .clip(CircleShape)
+            .background(SeniorBlue),
+        contentAlignment = Alignment.Center
+    ) {
+        if (imageRes != null) {
+            Image(
+                painter = painterResource(imageRes),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                text = initials ?: "",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+private fun PersonCard(
+    name: String,
+    relationship: String,
+    imageRes: Int? = null,
+    initials: String? = null,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(SeniorCard)
+            .border(
+                1.dp,
+                SeniorBorder,
+                RoundedCornerShape(18.dp)
+            )
+            .clickable {
+                onClick()
+            }
+            .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        SeniorAvatar(
+            imageRes = imageRes,
+            initials = initials
+        )
+
+        Spacer(
+            modifier = Modifier.width(14.dp)
+        )
+
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = name,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = relationship,
+                color = SeniorSecondary,
+                fontSize = 14.sp
+            )
+        }
+
+        Text(
+            text = "›",
+            color = SeniorSecondary,
+            fontSize = 30.sp
+        )
+    }
+}
+
+@Composable
+private fun ImportantPeopleScreen(
+    onAdd: () -> Unit,
+    onJemma: () -> Unit,
+    onSarah: () -> Unit,
+    onElliot: () -> Unit,
+    onMemoryAlert: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+            .padding(20.dp)
+    ) {
+        Spacer(
+            modifier = Modifier.height(10.dp)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = "Important People",
+                    fontSize = 25.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(
+                    modifier = Modifier.height(5.dp)
+                )
+
+                Text(
+                    text = "People your glasses can help you remember",
+                    color = SeniorSecondary,
+                    fontSize = 14.sp
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(SeniorBlue)
+                    .clickable {
+                        onAdd()
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "+",
+                    color = Color.White,
+                    fontSize = 27.sp
+                )
+            }
+        }
+
+        Spacer(
+            modifier = Modifier.height(22.dp)
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(SeniorLightBlue)
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "●",
+                color = SeniorGreen
+            )
+
+            Spacer(
+                modifier = Modifier.width(10.dp)
+            )
+
+            Column {
+                Text(
+                    text = "Glasses connected",
+                    color = SeniorBlue,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Text(
+                    text = "Recognition is ready",
+                    color = SeniorSecondary,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        Spacer(
+            modifier = Modifier.height(22.dp)
+        )
+
+        PersonCard(
+            name = "Jemma",
+            relationship = "Your wife",
+            imageRes = R.drawable.jemma,
+            onClick = onJemma
+        )
+
+        Spacer(
+            modifier = Modifier.height(12.dp)
+        )
+
+        PersonCard(
+            name = "Elliot",
+            relationship = "Your grandson",
+            imageRes = R.drawable.elliot,
+            onClick = onElliot
+        )
+
+        Spacer(
+            modifier = Modifier.height(12.dp)
+        )
+
+        PersonCard(
+            name = "Sarah",
+            relationship = "Your daughter",
+            initials = "SA",
+            onClick = onSarah
+        )
+
+        Spacer(
+            modifier = Modifier.height(28.dp)
+        )
+
+        SeniorPrimaryButton(
+            text = "+  Add Important Person",
+            onClick = onAdd
+        )
+
+        Spacer(
+            modifier = Modifier.height(12.dp)
+        )
+
+        SeniorSecondaryButton(
+            text = "Preview Memory Alert",
+            onClick = onMemoryAlert
+        )
+
+        Spacer(
+            modifier = Modifier.height(28.dp)
+        )
+    }
+}
+
+@Composable
+private fun AddPersonDemoScreen(
+    onBack: () -> Unit,
+    onSave: () -> Unit
+) {
+    var filled by remember {
+        mutableStateOf(false)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        SeniorHeader(
+            title = "Add Person",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            if (filled) {
+                SeniorAvatar(
+                    imageRes = R.drawable.jemma,
+                    size = 94
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(94.dp)
+                        .clip(CircleShape)
+                        .background(SeniorLightBlue)
+                        .border(
+                            2.dp,
+                            SeniorBlue,
+                            CircleShape
+                        )
+                        .clickable {
+                            filled = true
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "+",
+                        color = SeniorBlue,
+                        fontSize = 38.sp
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            DemoField(
+                label = "FULL NAME",
+                value = if (filled) {
+                    "Jemma"
+                } else {
+                    "Tap to fill demo information"
+                },
+                onClick = {
+                    filled = true
+                }
+            )
+
+            DemoField(
+                label = "RELATIONSHIP",
+                value = if (filled) {
+                    "Wife"
+                } else {
+                    "Relationship"
+                },
+                onClick = {
+                    filled = true
+                }
+            )
+
+            DemoField(
+                label = "WHAT YOUR GLASSES WILL SAY",
+                value = if (filled) {
+                    "This is Jemma, your wife."
+                } else {
+                    "Recognition message"
+                },
+                onClick = {
+                    filled = true
+                }
+            )
+
+            DemoField(
+                label = "MEMORY NOTES",
+                value = if (filled) {
+                    "Lives with you in Boston."
+                } else {
+                    "Important details"
+                },
+                onClick = {
+                    filled = true
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            SeniorPrimaryButton(
+                text = if (filled) {
+                    "Save Person"
+                } else {
+                    "Fill Demo Information"
+                },
+                onClick = {
+                    if (filled) {
+                        onSave()
+                    } else {
+                        filled = true
+                    }
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun DemoField(
+    label: String,
+    value: String,
+    onClick: (() -> Unit)? = null
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 14.dp)
+    ) {
+        Text(
+            text = label,
+            color = SeniorBlue,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(
+            modifier = Modifier.height(6.dp)
+        )
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(15.dp))
+                .background(SeniorCard)
+                .border(
+                    1.dp,
+                    SeniorBorder,
+                    RoundedCornerShape(15.dp)
+                )
+                .then(
+                    if (onClick != null) {
+                        Modifier.clickable {
+                            onClick()
+                        }
+                    } else {
+                        Modifier
+                    }
+                )
+                .padding(16.dp)
+        ) {
+            Text(
+                text = value,
+                fontSize = 15.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun SeniorPersonDetailScreen(
+    name: String,
+    relationship: String,
+    note: String,
+    imageRes: Int?,
+    initials: String?,
+    onBack: () -> Unit,
+    onRecognition: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        SeniorHeader(
+            title = "Person Details",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            SeniorAvatar(
+                imageRes = imageRes,
+                initials = initials,
+                size = 96
+            )
+
+            Spacer(
+                modifier = Modifier.height(14.dp)
+            )
+
+            Text(
+                text = name,
+                fontSize = 27.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = relationship,
+                color = SeniorSecondary,
+                fontSize = 15.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(26.dp)
+            )
+
+            DemoField(
+                label = "MEMORY NOTES",
+                value = note
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFFF0FDF4))
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "✓",
+                    color = SeniorGreen,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 24.sp
+                )
+
+                Spacer(
+                    modifier = Modifier.width(12.dp)
+                )
+
+                Column {
+                    Text(
+                        text = "Recognition active",
+                        color = Color(0xFF166534),
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        text = "Your glasses can recognize $name",
+                        color = Color(0xFF15803D),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            SeniorPrimaryButton(
+                text = "Preview Glasses Notification",
+                onClick = onRecognition
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            SeniorSecondaryButton(
+                text = "Back to Important People",
+                onClick = onBack
+            )
+        }
+    }
+}
+
+@Composable
+private fun FamilyMemoryDemoScreen(
+    onBack: () -> Unit,
+    onShoppingList: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        SeniorHeader(
+            title = "Family Memory",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(20.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SeniorAvatar(
+                    imageRes = R.drawable.elliot
+                )
+
+                Spacer(
+                    modifier = Modifier.width(14.dp)
+                )
+
+                Column {
+                    Text(
+                        text = "Elliot",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        text = "Your grandson",
+                        color = SeniorSecondary
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(SeniorLightBlue)
+                    .padding(20.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "FAVORITE FOOD",
+                        color = SeniorBlue,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    Text(
+                        text = "Cinnamon raisin bagels",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(6.dp)
+                    )
+
+                    Text(
+                        text = "Something to remember for his next visit.",
+                        color = SeniorSecondary
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(22.dp)
+            )
+
+            DemoField(
+                label = "WHEN HE MENTIONED IT",
+                value =
+                    "During your last FaceTime call\n\n" +
+                    "“Cinnamon raisin bagels are my favorite!”"
+            )
+
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
+
+            SeniorPrimaryButton(
+                text = "+  Add to Grocery List",
+                onClick = onShoppingList
+            )
+        }
+    }
+}
+
+@Composable
+private fun GroceryListDemoScreen(
+    items: MutableList<String>,
+    memoryItems: MutableList<String>,
+    checked: MutableMap<String, Boolean>,
+    onBack: () -> Unit,
+    onReminder: () -> Unit
+) {
+    var addingItem by remember {
+        mutableStateOf(false)
+    }
+
+    var newItem by remember {
+        mutableStateOf("")
+    }
+
+    var routeStarted by remember {
+        mutableStateOf(false)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        SeniorHeader(
+            title = "Edit new list",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(
+                horizontal = 20.dp
+            )
+        ) {
+            Row(
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(
+                            RoundedCornerShape(12.dp)
+                        )
+                        .background(SeniorCard)
+                        .border(
+                            1.dp,
+                            SeniorBorder,
+                            RoundedCornerShape(12.dp)
+                        ),
+                    contentAlignment =
+                        Alignment.Center
+                ) {
+                    Text(
+                        text = "✓",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.width(14.dp)
+                )
+
+                Column {
+                    Text(
+                        text = "Grocery List",
+                        fontSize = 23.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Text(
+                        text =
+                            "For Elliot's visit on 9/29/26",
+                        color = SeniorSecondary,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(
+                        RoundedCornerShape(18.dp)
+                    )
+                    .background(
+                        Color(0xFFF6F7F9)
+                    )
+                    .padding(16.dp)
+            ) {
+                Column {
+                    Text(
+                        text =
+                            "Last edited September 20, 2026 at 4:24 PM",
+                        color = SeniorBlue,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+
+                    items.forEach { item ->
+                        GroceryItem(
+                            text = item,
+                            highlighted =
+                                item in memoryItems,
+                            checked =
+                                checked[item] == true,
+                            onClick = {
+                                checked[item] =
+                                    !(checked[item] == true)
+                            }
+                        )
+                    }
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            if (addingItem) {
+                OutlinedTextField(
+                    value = newItem,
+                    onValueChange = {
+                        newItem = it
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = {
+                        Text("New grocery item")
+                    },
+                    placeholder = {
+                        Text(
+                            "e.g. Bananas"
+                        )
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp)
+                )
+
+                Spacer(
+                    modifier = Modifier.height(10.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            newItem = ""
+                            addingItem = false
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Cancel")
+                    }
+
+                    Button(
+                        onClick = {
+                            val item =
+                                newItem.trim()
+
+                            if (
+                                item.isNotEmpty() &&
+                                item !in items
+                            ) {
+                                items.add(item)
+                                checked[item] = false
+                            }
+
+                            newItem = ""
+                            addingItem = false
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors =
+                            ButtonDefaults.buttonColors(
+                                containerColor =
+                                    SeniorBlue
+                            )
+                    ) {
+                        Text("Add")
+                    }
+                }
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+            }
+
+            SeniorSecondaryButton(
+                text = if (routeStarted) {
+                    "Route started ✓"
+                } else {
+                    "Route me to nearest grocery store"
+                },
+                onClick = {
+                    routeStarted = true
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            SeniorPrimaryButton(
+                text = if (addingItem) {
+                    "Enter item above"
+                } else {
+                    "+  Add to shopping list"
+                },
+                onClick = {
+                    addingItem = true
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            SeniorSecondaryButton(
+                text = "Preview Memory Reminder",
+                onClick = onReminder
+            )
+
+            Spacer(
+                modifier = Modifier.height(30.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun GroceryItem(
+    text: String,
+    highlighted: Boolean,
+    checked: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .clip(
+                RoundedCornerShape(12.dp)
+            )
+            .background(
+                when {
+                    highlighted ->
+                        Color(0xFFE7F0FF)
+
+                    checked ->
+                        Color(0xFFF1F5F9)
+
+                    else ->
+                        Color.Transparent
+                }
+            )
+            .clickable {
+                onClick()
+            }
+            .padding(
+                horizontal = 8.dp,
+                vertical = 8.dp
+            ),
+        verticalAlignment =
+            Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .border(
+                    width =
+                        if (checked || highlighted) {
+                            2.dp
+                        } else {
+                            1.dp
+                        },
+                    color =
+                        if (checked || highlighted) {
+                            SeniorBlue
+                        } else {
+                            Color(0xFFD1D5DB)
+                        },
+                    shape = CircleShape
+                )
+                .background(
+                    if (checked) {
+                        SeniorBlue
+                    } else {
+                        Color.Transparent
+                    }
+                ),
+            contentAlignment =
+                Alignment.Center
+        ) {
+            if (checked) {
+                Text(
+                    text = "✓",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(
+            modifier = Modifier.width(12.dp)
+        )
+
+        Text(
+            text = text,
+            modifier = Modifier.weight(1f),
+            fontSize = 14.sp,
+            color = when {
+                checked ->
+                    SeniorSecondary
+
+                highlighted ->
+                    SeniorBlue
+
+                else ->
+                    Color(0xFF505B6B)
+            },
+            fontWeight =
+                if (highlighted) {
+                    FontWeight.Medium
+                } else {
+                    FontWeight.Normal
+                }
+        )
+
+        if (highlighted) {
+            Text(
+                text = "Recently added",
+                color = SeniorBlue,
+                fontSize = 9.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun MemoryAlertDemoScreen(
+    onDismiss: () -> Unit,
+    onView: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF383B42)),
+        contentAlignment = Alignment.BottomCenter
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(Color(0xFF555A64))
+                .padding(22.dp)
+        ) {
+            Text(
+                text = "Relevant memory",
+                color = Color.White.copy(
+                    alpha = 0.72f
+                )
+            )
+
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
+
+            Text(
+                text =
+                    "Your wife said she loved the " +
+                    "necklace in the store ahead.",
+                color = Color.White,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = onDismiss
+                ) {
+                    Text(
+                        text = "Dismiss",
+                        color = Color.White
+                    )
+                }
+
+                Button(
+                    onClick = onView,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SeniorBlue
+                    )
+                ) {
+                    Text(
+                        text = "View memory"
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedMemoryDemoScreen(
+    onBack: () -> Unit,
+    onHome: () -> Unit
+) {
+    var routed by remember {
+        mutableStateOf(false)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        SeniorHeader(
+            title = "Saved Memory",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(20.dp)
+        ) {
+            Text(
+                text = "Jemma",
+                fontSize = 25.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "Your wife",
+                color = SeniorSecondary
+            )
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(SeniorLightBlue)
+                    .padding(20.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "SAVED MEMORY",
+                        color = SeniorBlue,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    Text(
+                        text =
+                            "Jemma loved the necklace " +
+                            "in this store.",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            SeniorPrimaryButton(
+                text = if (routed) {
+                    "Route Started ✓"
+                } else {
+                    "Route Me to the Store"
+                },
+                onClick = {
+                    routed = true
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            SeniorSecondaryButton(
+                text = "Back to Home",
+                onClick = onHome
+            )
+        }
+    }
+}
+
+@Composable
+private fun RecognitionDemoScreen(
+    name: String,
+    relationship: String,
+    onBack: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF33363D)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(
+                    Color.White.copy(
+                        alpha = 0.12f
+                    )
+                )
+                .padding(30.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "Person recognized",
+                color = Color.White.copy(
+                    alpha = 0.75f
+                )
+            )
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            Text(
+                text = name,
+                color = Color.White,
+                fontSize = 38.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = relationship,
+                color = Color.White.copy(
+                    alpha = 0.78f
+                ),
+                fontSize = 19.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(26.dp)
+            )
+
+            OutlinedButton(
+                onClick = onBack,
+                border = BorderStroke(
+                    1.dp,
+                    Color.White.copy(
+                        alpha = 0.5f
+                    )
+                )
+            ) {
+                Text(
+                    text = "Back to app",
+                    color = Color.White
+                )
+            }
+        }
+    }
+}

@@ -1,0 +1,473 @@
+package com.zhuoying.ariaedgevlm
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.zhuoying.ariaedgevlm.ui.theme.AriaEdgeVLMTheme
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        const val ACTION_RUN_BRIDGE =
+            "com.zhuoying.ariaedgevlm.RUN_BRIDGE"
+
+        const val MODEL_E2B = "gemma4_e2b"
+        const val MODEL_E4B = "gemma4_e4b"
+    }
+
+    data class ModelSpec(
+        val key: String,
+        val displayName: String,
+        val fileName: String
+    )
+
+    private val models = mapOf(
+        MODEL_E2B to ModelSpec(
+            key = MODEL_E2B,
+            displayName = "Gemma 4 E2B",
+            fileName = "gemma-4-E2B-it.litertlm"
+        ),
+        MODEL_E4B to ModelSpec(
+            key = MODEL_E4B,
+            displayName = "Gemma 4 E4B",
+            fileName = "gemma-4-E4B-it.litertlm"
+        )
+    )
+
+    private var engine: Engine? = null
+    private var loadedModelKey: String? = null
+
+    private var status by mutableStateOf("Model not loaded")
+    private var prompt by mutableStateOf(
+        "What is in front of me? Answer briefly."
+    )
+    private var answer by mutableStateOf("")
+
+    private var inferenceRunning = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        setContent {
+            AriaEdgeVLMTheme {
+                Scaffold(
+                    modifier = Modifier.fillMaxSize()
+                ) { innerPadding ->
+
+                    Column(
+                        modifier = Modifier
+                            .padding(innerPadding)
+                            .padding(24.dp)
+                            .fillMaxSize(),
+                        verticalArrangement = Arrangement.Top
+                    ) {
+                        Text("AriaEdgeVLM")
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text("Status: $status")
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            "Loaded model: ${
+                                loadedModelKey?.let {
+                                    models[it]?.displayName
+                                } ?: "None"
+                            }"
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Button(
+                            onClick = {
+                                lifecycleScope.launch {
+                                    ensureModelLoaded(MODEL_E2B)
+                                }
+                            }
+                        ) {
+                            Text("Load Gemma 4 E2B")
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Button(
+                            onClick = {
+                                lifecycleScope.launch {
+                                    ensureModelLoaded(MODEL_E4B)
+                                }
+                            }
+                        ) {
+                            Text("Load Gemma 4 E4B")
+                        }
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        OutlinedTextField(
+                            value = prompt,
+                            onValueChange = { prompt = it },
+                            label = { Text("Prompt") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Button(
+                            onClick = {
+                                runBridgeInference()
+                            }
+                        ) {
+                            Text("Run Bridge Files")
+                        }
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Text("Answer:")
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            if (answer.isBlank()) {
+                                "(no answer yet)"
+                            } else {
+                                answer
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        if (intent?.action == ACTION_RUN_BRIDGE) {
+            runBridgeInference()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+
+        if (intent.action == ACTION_RUN_BRIDGE) {
+            runBridgeInference()
+        }
+    }
+
+    private fun getModelSpec(modelKey: String): ModelSpec {
+        return models[modelKey]
+            ?: error("Unknown model key: $modelKey")
+    }
+
+    private suspend fun ensureModelLoaded(
+        requestedModelKey: String
+    ): Boolean {
+
+        val spec = try {
+            getModelSpec(requestedModelKey)
+        } catch (e: Exception) {
+            status = "Unknown model: $requestedModelKey"
+            return false
+        }
+
+        if (
+            engine != null &&
+            loadedModelKey == requestedModelKey
+        ) {
+            status = "${spec.displayName} already ready on GPU"
+            return true
+        }
+
+        status = "Loading ${spec.displayName}..."
+
+        val modelFile = File(
+            filesDir,
+            "models/${spec.fileName}"
+        )
+
+        if (!modelFile.exists()) {
+            status =
+                "Model file not found:\n${modelFile.absolutePath}"
+            return false
+        }
+
+        return try {
+            val newEngine = withContext(Dispatchers.IO) {
+                val config = EngineConfig(
+                    modelPath = modelFile.absolutePath,
+                    backend = Backend.GPU(),
+                    visionBackend = Backend.GPU(),
+                    cacheDir = cacheDir.absolutePath
+                )
+
+                Engine(config).also {
+                    it.initialize()
+                }
+            }
+
+            withContext(Dispatchers.IO) {
+                try {
+                    engine?.close()
+                } catch (_: Exception) {
+                }
+            }
+
+            engine = newEngine
+            loadedModelKey = requestedModelKey
+
+            status = "${spec.displayName} ready on GPU"
+
+            true
+
+        } catch (e: Exception) {
+            status =
+                "Model load failed (${spec.displayName}):\n${e.message}"
+            false
+        }
+    }
+
+    private fun readRequestedModel(
+        bridgeDir: File
+    ): String {
+
+        val modelFile = File(
+            bridgeDir,
+            "model.txt"
+        )
+
+        if (!modelFile.exists()) {
+            return loadedModelKey ?: MODEL_E2B
+        }
+
+        val value = try {
+            modelFile.readText()
+                .trim()
+                .lowercase()
+        } catch (_: Exception) {
+            ""
+        }
+
+        return when (value) {
+            MODEL_E2B -> MODEL_E2B
+            MODEL_E4B -> MODEL_E4B
+            else -> loadedModelKey ?: MODEL_E2B
+        }
+    }
+
+    private fun runBridgeInference() {
+
+        if (inferenceRunning) {
+            status = "Inference already running."
+            return
+        }
+
+        lifecycleScope.launch {
+
+            inferenceRunning = true
+
+            try {
+                val bridgeDir = File(
+                    filesDir,
+                    "bridge"
+                )
+
+                if (!bridgeDir.exists()) {
+                    bridgeDir.mkdirs()
+                }
+
+                val imageFile = File(
+                    bridgeDir,
+                    "input.jpg"
+                )
+
+                val promptFile = File(
+                    bridgeDir,
+                    "prompt.txt"
+                )
+
+                val outputFile = File(
+                    bridgeDir,
+                    "output.txt"
+                )
+
+                val latencyFile = File(
+                    bridgeDir,
+                    "latency.txt"
+                )
+
+                val activeModelFile = File(
+                    bridgeDir,
+                    "active_model.txt"
+                )
+
+                if (!imageFile.exists()) {
+                    status =
+                        "input.jpg not found:\n${imageFile.absolutePath}"
+                    return@launch
+                }
+
+                if (!promptFile.exists()) {
+                    status =
+                        "prompt.txt not found:\n${promptFile.absolutePath}"
+                    return@launch
+                }
+
+                val finalPrompt =
+                    withContext(Dispatchers.IO) {
+                        promptFile.readText().trim()
+                    }
+
+                if (finalPrompt.isBlank()) {
+                    status = "Prompt is empty."
+                    return@launch
+                }
+
+                val requestedModelKey =
+                    withContext(Dispatchers.IO) {
+                        readRequestedModel(bridgeDir)
+                    }
+
+                val loaded =
+                    ensureModelLoaded(requestedModelKey)
+
+                if (!loaded) {
+                    withContext(Dispatchers.IO) {
+                        outputFile.writeText(
+                            "ERROR: model could not be loaded"
+                        )
+                    }
+                    return@launch
+                }
+
+                val currentEngine = engine
+
+                if (currentEngine == null) {
+                    status = "Model engine unavailable."
+                    return@launch
+                }
+
+                val spec =
+                    getModelSpec(requestedModelKey)
+
+                prompt = finalPrompt
+                answer = ""
+
+                status =
+                    "Running ${spec.displayName} inference..."
+
+                val startTime =
+                    System.nanoTime()
+
+                val responseString =
+                    withContext(Dispatchers.IO) {
+
+                        currentEngine
+                            .createConversation()
+                            .use { conversation ->
+
+                                val response =
+                                    conversation.sendMessage(
+                                        Contents.of(
+                                            Content.ImageFile(
+                                                imageFile.absolutePath
+                                            ),
+                                            Content.Text(
+                                                finalPrompt
+                                            )
+                                        )
+                                    )
+
+                                response.toString()
+                            }
+                    }
+
+                val elapsedSeconds =
+                    (System.nanoTime() - startTime) /
+                        1_000_000_000.0
+
+                answer = responseString
+
+                status =
+                    "${spec.displayName} done in " +
+                        "%.3f s".format(elapsedSeconds)
+
+                withContext(Dispatchers.IO) {
+
+                    outputFile.writeText(
+                        responseString
+                    )
+
+                    latencyFile.writeText(
+                        "%.6f".format(elapsedSeconds)
+                    )
+
+                    activeModelFile.writeText(
+                        requestedModelKey
+                    )
+                }
+
+            } catch (e: Exception) {
+
+                answer = ""
+
+                status =
+                    "Inference failed:\n${e.message}"
+
+                try {
+                    val bridgeDir = File(
+                        filesDir,
+                        "bridge"
+                    )
+
+                    File(
+                        bridgeDir,
+                        "output.txt"
+                    ).writeText(
+                        "ERROR: ${e.message}"
+                    )
+                } catch (_: Exception) {
+                }
+
+            } finally {
+                inferenceRunning = false
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        try {
+            engine?.close()
+        } catch (_: Exception) {
+        }
+
+        engine = null
+        loadedModelKey = null
+
+        super.onDestroy()
+    }
+}

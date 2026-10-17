@@ -1,0 +1,2970 @@
+package com.zhuoying.ariaedgevlm
+
+import android.graphics.BitmapFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
+
+// -----------------------------------------------------------------------------
+// Colors
+// -----------------------------------------------------------------------------
+
+private val AppBlue = Color(0xFF2854C7)
+private val AppLightBlue = Color(0xFFF0F4FF)
+private val AppCard = Color(0xFFF8F9FB)
+private val AppBorder = Color(0xFFE6E9EF)
+private val AppSecondary = Color(0xFF697386)
+private val AppGreen = Color(0xFF22A447)
+
+
+// -----------------------------------------------------------------------------
+// Data models
+// -----------------------------------------------------------------------------
+
+private data class MemoryItem(
+    val id: Int,
+    val text: String,
+    val context: String,
+    val grocerySuggestion: String? = null
+)
+
+private data class PersonProfile(
+    val id: Int,
+    val name: String,
+    val relationship: String,
+    val about: String,
+    val imageRes: Int? = null,
+    val imageUri: String? = null,
+    val memories: List<MemoryItem> = emptyList()
+)
+
+private data class GroceryEntry(
+    val id: Int,
+    val text: String,
+    val source: String? = null
+)
+
+private enum class SeniorScreen {
+    DASHBOARD,
+    PEOPLE,
+    ADD_PERSON,
+    PERSON_DETAIL,
+    ADD_MEMORY,
+    GROCERY,
+    MEMORY_ALERT,
+    SAVED_MEMORY,
+    RECOGNITION,
+    LIVE
+}
+
+
+// -----------------------------------------------------------------------------
+// Main app
+// -----------------------------------------------------------------------------
+
+@Composable
+fun SeniorUiApp(
+    onOpenSettings: () -> Unit = {}
+) {
+    var screen by remember {
+        mutableStateOf(SeniorScreen.DASHBOARD)
+    }
+
+    // One live feed shared across Dashboard and People pages. All values come
+    // from the Mac companion API, never from the old hard-coded demo status.
+    val companion = rememberCompanionFeed()
+    val scope = rememberCoroutineScope()
+    var memorySaving by remember { mutableStateOf(false) }
+    var memorySaveError by remember { mutableStateOf<String?>(null) }
+
+    var selectedPersonId by remember {
+        mutableStateOf<Int?>(null)
+    }
+
+    var recognitionReturn by remember {
+        mutableStateOf(SeniorScreen.PERSON_DETAIL)
+    }
+
+    var groceryReturn by remember {
+        mutableStateOf(SeniorScreen.DASHBOARD)
+    }
+
+    var alertReturn by remember {
+        mutableStateOf(SeniorScreen.DASHBOARD)
+    }
+
+    var nextPersonId by remember {
+        mutableStateOf(4)
+    }
+
+    var nextMemoryId by remember {
+        mutableStateOf(1000)
+    }
+
+    var nextGroceryId by remember {
+        mutableStateOf(100)
+    }
+
+    val people = remember {
+        mutableStateListOf(
+            PersonProfile(
+                id = 1,
+                name = "Jemma",
+                relationship = "Your wife",
+                about = "Lives with you in Boston.",
+                imageRes = R.drawable.jemma,
+                memories = listOf(
+                    MemoryItem(
+                        id = 101,
+                        text = "Jemma loved the blue necklace at the store near home.",
+                        context = "Shopping together"
+                    ),
+                    MemoryItem(
+                        id = 102,
+                        text = "Jemma prefers tea in the evening.",
+                        context = "Daily routine"
+                    )
+                )
+            ),
+            PersonProfile(
+                id = 2,
+                name = "Elliot",
+                relationship = "Your grandson",
+                about = "Visits often and enjoys spending time with you.",
+                imageRes = R.drawable.elliot,
+                memories = listOf(
+                    MemoryItem(
+                        id = 201,
+                        text = "“Cinnamon raisin bagels are my favorite!”",
+                        context = "Last FaceTime call",
+                        grocerySuggestion = "Cinnamon raisin bagels"
+                    )
+                )
+            ),
+            PersonProfile(
+                id = 3,
+                name = "Sarah",
+                relationship = "Your daughter",
+                about = "Works as a nurse at Mass General. Allergic to peanuts.",
+                memories = emptyList()
+            )
+        )
+    }
+
+    val groceryItems = remember {
+        mutableStateListOf(
+            GroceryEntry(
+                id = 1,
+                text = "Eggs"
+            ),
+            GroceryEntry(
+                id = 2,
+                text = "Sourdough bread"
+            ),
+            GroceryEntry(
+                id = 3,
+                text = "Strawberries"
+            ),
+            GroceryEntry(
+                id = 4,
+                text = "Oat milk"
+            ),
+            GroceryEntry(
+                id = 5,
+                text = "Spinach"
+            )
+        )
+    }
+
+    val groceryChecked = remember {
+        mutableStateMapOf<Int, Boolean>()
+    }
+
+    fun selectedPerson(): PersonProfile? {
+        return people.firstOrNull {
+            it.id == selectedPersonId
+        }
+    }
+
+    fun openPerson(id: Int) {
+        selectedPersonId = id
+        screen = SeniorScreen.PERSON_DETAIL
+    }
+
+    fun addGrocery(
+        text: String,
+        source: String?
+    ) {
+        val clean = text.trim()
+
+        if (clean.isBlank()) {
+            return
+        }
+
+        val alreadyExists =
+            groceryItems.any {
+                it.text.equals(
+                    clean,
+                    ignoreCase = true
+                )
+            }
+
+        if (!alreadyExists) {
+            groceryItems.add(
+                GroceryEntry(
+                    id = nextGroceryId++,
+                    text = clean,
+                    source = source
+                )
+            )
+        }
+    }
+
+    BackHandler(
+        enabled = screen != SeniorScreen.DASHBOARD
+    ) {
+        screen = when (screen) {
+            SeniorScreen.PEOPLE ->
+                SeniorScreen.DASHBOARD
+
+            SeniorScreen.ADD_PERSON ->
+                SeniorScreen.PEOPLE
+
+            SeniorScreen.PERSON_DETAIL ->
+                SeniorScreen.PEOPLE
+
+            SeniorScreen.ADD_MEMORY ->
+                SeniorScreen.PERSON_DETAIL
+
+            SeniorScreen.GROCERY ->
+                groceryReturn
+
+            SeniorScreen.MEMORY_ALERT ->
+                alertReturn
+
+            SeniorScreen.SAVED_MEMORY ->
+                SeniorScreen.MEMORY_ALERT
+
+            SeniorScreen.RECOGNITION ->
+                recognitionReturn
+
+            SeniorScreen.LIVE ->
+                SeniorScreen.DASHBOARD
+
+            SeniorScreen.DASHBOARD ->
+                SeniorScreen.DASHBOARD
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = Color.White
+    ) {
+        when (screen) {
+
+            SeniorScreen.DASHBOARD -> {
+                DashboardScreen(
+                    peopleCount = people.size,
+                    groceryCount = groceryItems.size,
+                    companion = companion,
+                    onLive = { screen = SeniorScreen.LIVE },
+                    onPeople = {
+                        screen = SeniorScreen.PEOPLE
+                    },
+                    onGrocery = {
+                        groceryReturn =
+                            SeniorScreen.DASHBOARD
+
+                        screen =
+                            SeniorScreen.GROCERY
+                    },
+                    onAlert = {
+                        alertReturn =
+                            SeniorScreen.DASHBOARD
+
+                        screen =
+                            SeniorScreen.MEMORY_ALERT
+                    },
+                    onSettings = onOpenSettings
+                )
+            }
+
+            SeniorScreen.PEOPLE -> {
+                PeopleScreen(
+                    people = people,
+                    onBack = {
+                        screen =
+                            SeniorScreen.DASHBOARD
+                    },
+                    onPerson = {
+                        openPerson(it)
+                    },
+                    onAddPerson = {
+                        screen =
+                            SeniorScreen.ADD_PERSON
+                    }
+                )
+            }
+
+            SeniorScreen.ADD_PERSON -> {
+                AddPersonScreen(
+                    onBack = {
+                        screen =
+                            SeniorScreen.PEOPLE
+                    },
+                    onSave = {
+                        name,
+                        relationship,
+                        about,
+                        photoUri ->
+
+                        val newId =
+                            nextPersonId++
+
+                        people.add(
+                            PersonProfile(
+                                id = newId,
+                                name = name,
+                                relationship =
+                                    relationship,
+                                about = about,
+                                imageUri =
+                                    photoUri,
+                                memories =
+                                    emptyList()
+                            )
+                        )
+
+                        selectedPersonId =
+                            newId
+
+                        screen =
+                            SeniorScreen
+                                .PERSON_DETAIL
+                    }
+                )
+            }
+
+            SeniorScreen.PERSON_DETAIL -> {
+                val person = selectedPerson()
+
+                if (person == null) {
+                    screen = SeniorScreen.PEOPLE
+                } else {
+                    PersonDetailScreen(
+                        person = person,
+                        syncedMemories = companion.memories.filter {
+                            it.optString("person").equals(person.name, ignoreCase = true)
+                        },
+                        groceryItems =
+                            groceryItems,
+                        onBack = {
+                            screen =
+                                SeniorScreen.PEOPLE
+                        },
+                        onAddMemory = {
+                            screen =
+                                SeniorScreen.ADD_MEMORY
+                        },
+                        onMemoryAction = {
+                            memory ->
+
+                            memory.grocerySuggestion
+                                ?.let {
+                                    suggestion ->
+
+                                    addGrocery(
+                                        text =
+                                            suggestion,
+                                        source =
+                                            "From ${person.name}'s memory"
+                                    )
+                                }
+                        },
+                        onOpenGrocery = {
+                            groceryReturn =
+                                SeniorScreen
+                                    .PERSON_DETAIL
+
+                            screen =
+                                SeniorScreen.GROCERY
+                        },
+                        onRecognition = {
+                            recognitionReturn =
+                                SeniorScreen
+                                    .PERSON_DETAIL
+
+                            screen =
+                                SeniorScreen
+                                    .RECOGNITION
+                        }
+                    )
+                }
+            }
+
+            SeniorScreen.ADD_MEMORY -> {
+                val person = selectedPerson()
+
+                if (person == null) {
+                    screen =
+                        SeniorScreen.PEOPLE
+                } else {
+                    AddMemoryScreen(
+                        personName = person.name,
+                        saving = memorySaving,
+                        errorMessage = memorySaveError,
+                        onBack = {
+                            memorySaveError = null
+                            screen = SeniorScreen.PERSON_DETAIL
+                        },
+                        onSave = { text, context ->
+                            if (!memorySaving) {
+                                memorySaving = true
+                                memorySaveError = null
+                                val note = if (context.isBlank() || context == "Added manually")
+                                    text else "$text (Context: $context)"
+                                scope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) {
+                                            CompanionHttp.post(
+                                                "/memories",
+                                                JSONObject().put("person", person.name)
+                                                    .put("text", note)
+                                            )
+                                        }
+                                        // The API accepted a PENDING note, not a saved fact.
+                                        // The person screen renders saved/pending from /memories.
+                                        screen = SeniorScreen.PERSON_DETAIL
+                                    } catch (e: Exception) {
+                                        memorySaveError = "Could not send to glasses: ${e.message}"
+                                    } finally {
+                                        memorySaving = false
+                                    }
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+
+            SeniorScreen.GROCERY -> {
+                GroceryScreen(
+                    items = groceryItems,
+                    checked = groceryChecked,
+                    onBack = {
+                        screen =
+                            groceryReturn
+                    },
+                    onAddItem = {
+                        text ->
+
+                        addGrocery(
+                            text = text,
+                            source = null
+                        )
+                    }
+                )
+            }
+
+            SeniorScreen.MEMORY_ALERT -> {
+                MemoryAlertScreen(
+                    onDismiss = {
+                        screen = alertReturn
+                    },
+                    onViewMemory = {
+                        selectedPersonId = 1
+
+                        screen =
+                            SeniorScreen
+                                .SAVED_MEMORY
+                    }
+                )
+            }
+
+            SeniorScreen.SAVED_MEMORY -> {
+                SavedMemoryScreen(
+                    onBack = {
+                        screen =
+                            SeniorScreen
+                                .MEMORY_ALERT
+                    },
+                    onPerson = {
+                        selectedPersonId = 1
+
+                        screen =
+                            SeniorScreen
+                                .PERSON_DETAIL
+                    },
+                    onHome = {
+                        screen =
+                            SeniorScreen
+                                .DASHBOARD
+                    }
+                )
+            }
+
+            SeniorScreen.LIVE -> {
+                CompanionLiveScreen(onBack = { screen = SeniorScreen.DASHBOARD })
+            }
+
+            SeniorScreen.RECOGNITION -> {
+                val person = selectedPerson()
+
+                if (person == null) {
+                    screen =
+                        SeniorScreen.PEOPLE
+                } else {
+                    RecognitionScreen(
+                        person = person,
+                        onBack = {
+                            screen =
+                                recognitionReturn
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Dashboard
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun DashboardScreen(
+    peopleCount: Int,
+    groceryCount: Int,
+    companion: CompanionFeed,
+    onLive: () -> Unit,
+    onPeople: () -> Unit,
+    onGrocery: () -> Unit,
+    onAlert: () -> Unit,
+    onSettings: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Spacer(Modifier.height(2.dp))
+        Text("My AI Glasses", fontSize = 27.sp, fontWeight = FontWeight.Bold)
+        Text("Your glasses, memories, and recent questions.",
+            color = AppSecondary, fontSize = 16.sp, lineHeight = 23.sp)
+
+        SystemCard(companion)
+        AiModeCard(companion)
+
+        Text("Recent Activity", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        if (!companion.online) {
+            Text("Connect your glasses to see recent activity.", color = AppSecondary, fontSize = 15.sp)
+        } else {
+            // Only show meaningful completed actions, not internal start/pending events.
+            val recent = companion.events.filter {
+                it.optString("kind") in setOf("question_answered", "memory_saved", "memory_failed", "proactive_alert")
+            }.take(2)
+            if (recent.isEmpty()) {
+                Text("Nothing new yet.", color = AppSecondary, fontSize = 15.sp)
+            } else {
+                recent.forEach { event ->
+                    RecentActivityCard(
+                        person = "Glasses",
+                        title = companionEventTitle(event.optString("kind")),
+                        description = companionEventDescription(event),
+                        tag = "RECENT",
+                        onClick = onLive
+                    )
+                }
+            }
+        }
+
+        Button(onClick = onLive, modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)) {
+            Text("View Activity & Memories", fontSize = 17.sp)
+        }
+        if (companion.candidates.isNotEmpty()) {
+            Text("${companion.candidates.size} new memory suggestions to review",
+                color = AppBlue, fontSize = 15.sp)
+        }
+
+        Text("My Things", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        FeatureCard(title = "People & Memories", description = "People who matter to you.",
+            action = "Open", onClick = onPeople)
+        FeatureCard(title = "Shopping List", description = "$groceryCount items",
+            action = "Open", onClick = onGrocery)
+        TextButton(onClick = onSettings, modifier = Modifier.fillMaxWidth()) {
+            Text("Settings", fontSize = 16.sp)
+        }
+    }
+}
+
+@Composable
+private fun AiModeCard(companion: CompanionFeed) {
+    val scope = rememberCoroutineScope()
+    val modes = listOf(
+        "automatic" to "Automatic",
+        "e4b_only" to "Gemma E4B only",
+        "cloud_only" to "Cloud AI only"
+    )
+    var pending by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    // Optimistic local display only while the server confirms. Refresh restores server truth.
+    var confirmed by remember { mutableStateOf<String?>(null) }
+    val serverMode = companion.status.optString("model_mode", "automatic")
+    LaunchedEffect(serverMode) { confirmed = null }
+    val selected = confirmed ?: serverMode
+    Surface(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp),
+        color = AppCard, border = BorderStroke(1.dp, AppBorder)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Choose AI Mode", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            Text("Automatic is recommended.", color = AppSecondary, fontSize = 14.sp)
+            modes.forEach { (value, name) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 50.dp)
+                        .clickable(enabled = companion.online && !pending) {
+                            if (value != selected) {
+                                pending = true
+                                error = ""
+                                scope.launch {
+                                    try {
+                                        withContext(Dispatchers.IO) {
+                                            CompanionHttp.post("/settings/model_mode", JSONObject().put("mode", value))
+                                        }
+                                        confirmed = value
+                                    } catch (e: Exception) {
+                                        error = "Cannot change mode. Check Mac connection."
+                                    } finally {
+                                        pending = false
+                                    }
+                                }
+                            }
+                        },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(selected = selected == value, onClick = null,
+                        enabled = companion.online && !pending)
+                    Spacer(Modifier.width(8.dp))
+                    Text(name, fontSize = 16.sp, fontWeight = if (selected == value) FontWeight.Bold else FontWeight.Normal)
+                }
+            }
+            Text(
+                text = when (selected) {
+                    "e4b_only" -> "Uses your phone. No cloud fallback or live web answers."
+                    "cloud_only" -> "Uses cloud AI. Internet required."
+                    else -> "Chooses local or cloud based on your question."
+                },
+                color = AppSecondary, fontSize = 14.sp, lineHeight = 20.sp
+            )
+            if (!companion.online) Text("Connect to your Mac to change this.", color = AppSecondary, fontSize = 13.sp)
+            if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error, fontSize = 14.sp)
+        }
+    }
+}
+
+@Composable
+private fun RecentActivityCard(
+    person: String,
+    title: String,
+    description: String,
+    tag: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                onClick()
+            },
+        shape = RoundedCornerShape(18.dp),
+        color = Color.White,
+        border = BorderStroke(
+            1.dp,
+            AppBorder
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(17.dp)
+        ) {
+            Row(
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(9.dp)
+                        .clip(CircleShape)
+                        .background(AppGreen)
+                )
+
+                Spacer(
+                    modifier = Modifier.width(8.dp)
+                )
+
+                Text(
+                    text = tag,
+                    color = AppBlue,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(
+                    modifier = Modifier.weight(1f)
+                )
+
+                Text(
+                    text = "Recent",
+                    color = AppSecondary,
+                    fontSize = 11.sp
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            Text(
+                text = person,
+                color = AppSecondary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium
+            )
+
+            Spacer(
+                modifier = Modifier.height(3.dp)
+            )
+
+            Text(
+                text = title,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(6.dp)
+            )
+
+            Text(
+                text = description,
+                color = AppSecondary,
+                fontSize = 13.sp,
+                lineHeight = 19.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.End,
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "View",
+                    color = AppBlue,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(
+                    modifier = Modifier.width(4.dp)
+                )
+
+                Text(
+                    text = "›",
+                    color = AppBlue,
+                    fontSize = 25.sp
+                )
+            }
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// People list
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun PeopleScreen(
+    people: List<PersonProfile>,
+    onBack: () -> Unit,
+    onPerson: (Int) -> Unit,
+    onAddPerson: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        AppHeader(
+            title = "People & Memories",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(
+                horizontal = 20.dp
+            )
+        ) {
+            Text(
+                text = "Important People",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(5.dp)
+            )
+
+            Text(
+                text =
+                    "Each person has one profile and " +
+                    "their own saved memories.",
+                color = AppSecondary,
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            people.forEach {
+                person ->
+
+                PersonRow(
+                    person = person,
+                    onClick = {
+                        onPerson(person.id)
+                    }
+                )
+
+                Spacer(
+                    modifier =
+                        Modifier.height(12.dp)
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
+
+            PrimaryButton(
+                text = "+  Add Important Person",
+                onClick = onAddPerson
+            )
+
+            Spacer(
+                modifier = Modifier.height(30.dp)
+            )
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Add person with REAL gallery picker
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun AddPersonScreen(
+    onBack: () -> Unit,
+    onSave: (
+        String,
+        String,
+        String,
+        String?
+    ) -> Unit
+) {
+    var name by remember {
+        mutableStateOf("")
+    }
+
+    var relationship by remember {
+        mutableStateOf("")
+    }
+
+    var about by remember {
+        mutableStateOf("")
+    }
+
+    var photoUri by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    val photoPicker =
+        rememberLauncherForActivityResult(
+            contract =
+                ActivityResultContracts
+                    .GetContent()
+        ) {
+            uri ->
+
+            if (uri != null) {
+                photoUri = uri.toString()
+            }
+        }
+
+    val canSave =
+        name.isNotBlank() &&
+        relationship.isNotBlank()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        AppHeader(
+            title = "Add Important Person",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(
+                20.dp
+            ),
+            horizontalAlignment =
+                Alignment.CenterHorizontally
+        ) {
+            PersonAvatar(
+                imageUri = photoUri,
+                initials =
+                    if (name.isBlank()) {
+                        "+"
+                    } else {
+                        initialsFor(name)
+                    },
+                size = 100
+            )
+
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
+
+            TextButton(
+                onClick = {
+                    photoPicker.launch(
+                        "image/*"
+                    )
+                }
+            ) {
+                Text(
+                    text = if (
+                        photoUri == null
+                    ) {
+                        "+ Choose photo from gallery"
+                    } else {
+                        "Change photo"
+                    }
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            FieldLabel("NAME")
+
+            OutlinedTextField(
+                value = name,
+                onValueChange = {
+                    name = it
+                },
+                modifier =
+                    Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text("e.g. Emily")
+                },
+                singleLine = true,
+                shape =
+                    RoundedCornerShape(16.dp)
+            )
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            FieldLabel("RELATIONSHIP")
+
+            OutlinedTextField(
+                value = relationship,
+                onValueChange = {
+                    relationship = it
+                },
+                modifier =
+                    Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text("e.g. Your sister")
+                },
+                singleLine = true,
+                shape =
+                    RoundedCornerShape(16.dp)
+            )
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            FieldLabel("ABOUT")
+
+            OutlinedTextField(
+                value = about,
+                onValueChange = {
+                    about = it
+                },
+                modifier =
+                    Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text(
+                        "e.g. Lives in New York."
+                    )
+                },
+                minLines = 3,
+                shape =
+                    RoundedCornerShape(16.dp)
+            )
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            Button(
+                onClick = {
+                    if (canSave) {
+                        onSave(
+                            name.trim(),
+                            relationship.trim(),
+                            about.trim(),
+                            photoUri
+                        )
+                    }
+                },
+                enabled = canSave,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape =
+                    RoundedCornerShape(16.dp),
+                colors =
+                    ButtonDefaults
+                        .buttonColors(
+                            containerColor =
+                                AppBlue
+                        )
+            ) {
+                Text(
+                    text = "Save Person",
+                    fontWeight =
+                        FontWeight.Bold
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(30.dp)
+            )
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Unified person detail
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun PersonDetailScreen(
+    person: PersonProfile,
+    syncedMemories: List<JSONObject>,
+    groceryItems: List<GroceryEntry>,
+    onBack: () -> Unit,
+    onAddMemory: () -> Unit,
+    onMemoryAction: (MemoryItem) -> Unit,
+    onOpenGrocery: () -> Unit,
+    onRecognition: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        AppHeader(
+            title = "Person",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(
+                horizontal = 20.dp
+            ),
+            horizontalAlignment =
+                Alignment.CenterHorizontally
+        ) {
+            PersonAvatar(
+                imageRes = person.imageRes,
+                imageUri = person.imageUri,
+                initials =
+                    initialsFor(person.name),
+                size = 100
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            Text(
+                text = person.name,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = person.relationship,
+                color = AppSecondary,
+                fontSize = 15.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(26.dp)
+            )
+
+            InfoCard(
+                label = "ABOUT",
+                text = if (
+                    person.about.isBlank()
+                ) {
+                    "No profile information yet."
+                } else {
+                    person.about
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(26.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment =
+                    Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Memories",
+                    fontSize = 21.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier =
+                        Modifier.weight(1f)
+                )
+
+                Text(
+                    text =
+                        "${syncedMemories.count { it.optString("state") == "saved" }} synced",
+                    color = AppSecondary,
+                    fontSize = 13.sp
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            if (syncedMemories.isNotEmpty()) {
+                syncedMemories.forEach { m ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(1.dp, AppBorder),
+                        color = Color.White
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text(
+                                text = when (m.optString("state")) {
+                                    "saved" -> "SAVED TO GLASSES MEMORY"
+                                    "failed" -> "MEMORY SAVE FAILED"
+                                    else -> "SYNCING TO GLASSES..."
+                                },
+                                color = if (m.optString("state") == "saved") AppGreen else AppSecondary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(m.optString("text"), fontSize = 15.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "From ${m.optString("source", "phone")}",
+                                fontSize = 12.sp, color = AppSecondary
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+            }
+
+            if (person.memories.isNotEmpty()) {
+                Text(
+                    "APP EXAMPLES (not synced to glasses)",
+                    fontSize = 11.sp,
+                    color = AppSecondary,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+
+            if (person.memories.isEmpty() && syncedMemories.isEmpty()) {
+                Surface(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    shape =
+                        RoundedCornerShape(
+                            18.dp
+                        ),
+                    color = AppCard,
+                    border = BorderStroke(
+                        1.dp,
+                        AppBorder
+                    )
+                ) {
+                    Column(
+                        modifier =
+                            Modifier.padding(20.dp),
+                        horizontalAlignment =
+                            Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text =
+                                "No memories yet",
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
+                        Spacer(
+                            modifier =
+                                Modifier.height(5.dp)
+                        )
+
+                        Text(
+                            text =
+                                "Add something useful you would like your glasses to remember about ${person.name}.",
+                            textAlign =
+                                TextAlign.Center,
+                            color =
+                                AppSecondary,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp
+                        )
+                    }
+                }
+            } else {
+                person.memories.forEach {
+                    memory ->
+
+                    MemoryCard(
+                        memory = memory,
+                        alreadyInGrocery =
+                            memory
+                                .grocerySuggestion
+                                ?.let {
+                                    suggestion ->
+
+                                    groceryItems.any {
+                                        it.text.equals(
+                                            suggestion,
+                                            ignoreCase =
+                                                true
+                                        )
+                                    }
+                                } ?: false,
+                        onAction = {
+                            onMemoryAction(memory)
+                        },
+                        onOpenGrocery =
+                            onOpenGrocery
+                    )
+
+                    Spacer(
+                        modifier =
+                            Modifier.height(12.dp)
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            PrimaryButton(
+                text = "+  Add Memory",
+                onClick = onAddMemory
+            )
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape =
+                    RoundedCornerShape(16.dp),
+                color = Color(0xFFF0FDF4)
+            ) {
+                Row(
+                    modifier =
+                        Modifier.padding(16.dp),
+                    verticalAlignment =
+                        Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "✓",
+                        color = AppGreen,
+                        fontSize = 23.sp,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier =
+                            Modifier.width(12.dp)
+                    )
+
+                    Column {
+                        Text(
+                            text =
+                                "Recognition preview",
+                            color =
+                                Color(0xFF166534),
+                            fontWeight =
+                                FontWeight.Bold
+                        )
+
+                        Text(
+                            text =
+                                "Face recognition enrollment is not connected yet; this is a UI preview for ${person.name}.",
+                            color =
+                                Color(0xFF15803D),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            SecondaryButton(
+                text = "Preview Glasses Recognition",
+                onClick = onRecognition
+            )
+
+            Spacer(
+                modifier = Modifier.height(30.dp)
+            )
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Add memory
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun AddMemoryScreen(
+    personName: String,
+    saving: Boolean,
+    errorMessage: String?,
+    onBack: () -> Unit,
+    onSave: (
+        String,
+        String
+    ) -> Unit
+) {
+    var memory by remember {
+        mutableStateOf("")
+    }
+
+    var context by remember {
+        mutableStateOf("")
+    }
+
+    val canSave =
+        memory.isNotBlank()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        AppHeader(
+            title = "Add Memory",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(
+                20.dp
+            )
+        ) {
+            Text(
+                text = "Memory for $personName",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(6.dp)
+            )
+
+            Text(
+                text =
+                    "Save something that could be useful later when your glasses recognize the right person or context.",
+                color = AppSecondary,
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            FieldLabel(
+                "WHAT WOULD YOU LIKE TO REMEMBER?"
+            )
+
+            OutlinedTextField(
+                value = memory,
+                onValueChange = {
+                    memory = it
+                },
+                modifier =
+                    Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text(
+                        "e.g. She loved the blue necklace at this store."
+                    )
+                },
+                minLines = 4,
+                shape =
+                    RoundedCornerShape(16.dp)
+            )
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            FieldLabel(
+                "CONTEXT / SOURCE"
+            )
+
+            OutlinedTextField(
+                value = context,
+                onValueChange = {
+                    context = it
+                },
+                modifier =
+                    Modifier.fillMaxWidth(),
+                placeholder = {
+                    Text(
+                        "e.g. Shopping together"
+                    )
+                },
+                minLines = 2,
+                shape =
+                    RoundedCornerShape(16.dp)
+            )
+
+            Spacer(
+                modifier = Modifier.height(26.dp)
+            )
+
+            if (!errorMessage.isNullOrBlank()) {
+                Text(
+                    text = errorMessage,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+
+            Button(
+                onClick = {
+                    if (canSave && !saving) {
+                        onSave(
+                            memory.trim(),
+                            if (
+                                context.isBlank()
+                            ) {
+                                "Added manually"
+                            } else {
+                                context.trim()
+                            }
+                        )
+                    }
+                },
+                enabled = canSave && !saving,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp),
+                shape =
+                    RoundedCornerShape(16.dp),
+                colors =
+                    ButtonDefaults
+                        .buttonColors(
+                            containerColor =
+                                AppBlue
+                        )
+            ) {
+                Text(
+                    text = if (saving) "Sending to glasses..." else "Save to Glasses Memory",
+                    fontWeight =
+                        FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Grocery
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun GroceryScreen(
+    items: List<GroceryEntry>,
+    checked: MutableMap<Int, Boolean>,
+    onBack: () -> Unit,
+    onAddItem: (String) -> Unit
+) {
+    var adding by remember {
+        mutableStateOf(false)
+    }
+
+    var newItem by remember {
+        mutableStateOf("")
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        AppHeader(
+            title = "Grocery List",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(
+                horizontal = 20.dp
+            )
+        ) {
+            Text(
+                text = "Shopping List",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(5.dp)
+            )
+
+            Text(
+                text =
+                    "Items can be added manually or suggested from a saved memory.",
+                color = AppSecondary,
+                fontSize = 14.sp,
+                lineHeight = 20.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            items.forEach {
+                entry ->
+
+                GroceryRow(
+                    entry = entry,
+                    checked =
+                        checked[entry.id] ==
+                            true,
+                    onClick = {
+                        checked[entry.id] =
+                            !(checked[entry.id]
+                                == true)
+                    }
+                )
+
+                Spacer(
+                    modifier =
+                        Modifier.height(8.dp)
+                )
+            }
+
+            if (adding) {
+                Spacer(
+                    modifier =
+                        Modifier.height(14.dp)
+                )
+
+                OutlinedTextField(
+                    value = newItem,
+                    onValueChange = {
+                        newItem = it
+                    },
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    label = {
+                        Text("New grocery item")
+                    },
+                    singleLine = true,
+                    shape =
+                        RoundedCornerShape(16.dp)
+                )
+
+                Spacer(
+                    modifier =
+                        Modifier.height(10.dp)
+                )
+
+                Row(
+                    horizontalArrangement =
+                        Arrangement.spacedBy(
+                            10.dp
+                        )
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            adding = false
+                            newItem = ""
+                        },
+                        modifier =
+                            Modifier.weight(1f)
+                    ) {
+                        Text("Cancel")
+                    }
+
+                    Button(
+                        onClick = {
+                            if (
+                                newItem
+                                    .isNotBlank()
+                            ) {
+                                onAddItem(
+                                    newItem.trim()
+                                )
+                            }
+
+                            newItem = ""
+                            adding = false
+                        },
+                        modifier =
+                            Modifier.weight(1f),
+                        colors =
+                            ButtonDefaults
+                                .buttonColors(
+                                    containerColor =
+                                        AppBlue
+                                )
+                    ) {
+                        Text("Add")
+                    }
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(22.dp)
+            )
+
+            PrimaryButton(
+                text = if (adding) {
+                    "Enter item above"
+                } else {
+                    "+  Add Item"
+                },
+                onClick = {
+                    adding = true
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(30.dp)
+            )
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Memory alert + saved memory
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun MemoryAlertScreen(
+    onDismiss: () -> Unit,
+    onViewMemory: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Color(0xFF34373D)
+            ),
+        contentAlignment =
+            Alignment.BottomCenter
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp)
+                .clip(
+                    RoundedCornerShape(
+                        24.dp
+                    )
+                )
+                .background(
+                    Color(0xFF555A64)
+                )
+                .padding(22.dp)
+        ) {
+            Text(
+                text = "GLASSES PREVIEW",
+                color = Color.White.copy(
+                    alpha = 0.62f
+                ),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(7.dp)
+            )
+
+            Text(
+                text = "Relevant memory",
+                color = Color.White.copy(
+                    alpha = 0.78f
+                ),
+                fontSize = 15.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
+
+            Text(
+                text =
+                    "Jemma loved the blue necklace " +
+                    "at the store near home.",
+                color = Color.White,
+                fontSize = 22.sp,
+                lineHeight = 28.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(7.dp)
+            )
+
+            Text(
+                text =
+                    "Surfaced because this place may be relevant to a saved memory.",
+                color = Color.White.copy(
+                    alpha = 0.65f
+                ),
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(20.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement =
+                    Arrangement.End
+            ) {
+                TextButton(
+                    onClick = onDismiss
+                ) {
+                    Text(
+                        text = "Dismiss",
+                        color = Color.White
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.width(8.dp)
+                )
+
+                Button(
+                    onClick = onViewMemory,
+                    colors =
+                        ButtonDefaults
+                            .buttonColors(
+                                containerColor =
+                                    AppBlue
+                            )
+                ) {
+                    Text("View Memory")
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun SavedMemoryScreen(
+    onBack: () -> Unit,
+    onPerson: () -> Unit,
+    onHome: () -> Unit
+) {
+    var routeStarted by remember {
+        mutableStateOf(false)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(
+                rememberScrollState()
+            )
+    ) {
+        AppHeader(
+            title = "Saved Memory",
+            onBack = onBack
+        )
+
+        Column(
+            modifier = Modifier.padding(
+                20.dp
+            )
+        ) {
+            Row(
+                verticalAlignment =
+                    Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(
+                        RoundedCornerShape(
+                            16.dp
+                        )
+                    )
+                    .clickable {
+                        onPerson()
+                    }
+                    .padding(
+                        vertical = 8.dp
+                    )
+            ) {
+                PersonAvatar(
+                    imageRes =
+                        R.drawable.jemma,
+                    initials = "J",
+                    size = 58
+                )
+
+                Spacer(
+                    modifier = Modifier.width(
+                        14.dp
+                    )
+                )
+
+                Column(
+                    modifier =
+                        Modifier.weight(1f)
+                ) {
+                    Text(
+                        text = "Jemma",
+                        fontSize = 19.sp,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Text(
+                        text = "Your wife",
+                        color = AppSecondary
+                    )
+                }
+
+                Text(
+                    text = "›",
+                    fontSize = 28.sp,
+                    color = AppSecondary
+                )
+            }
+
+            Spacer(
+                modifier = Modifier.height(22.dp)
+            )
+
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape =
+                    RoundedCornerShape(20.dp),
+                color = AppLightBlue
+            ) {
+                Column(
+                    modifier = Modifier.padding(
+                        20.dp
+                    )
+                ) {
+                    Text(
+                        text = "SAVED MEMORY",
+                        color = AppBlue,
+                        fontSize = 11.sp,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier =
+                            Modifier.height(8.dp)
+                    )
+
+                    Text(
+                        text =
+                            "Jemma loved the blue necklace at the store near home.",
+                        fontSize = 22.sp,
+                        lineHeight = 28.sp,
+                        fontWeight =
+                            FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier =
+                            Modifier.height(10.dp)
+                    )
+
+                    Text(
+                        text =
+                            "Shopping together",
+                        color = AppSecondary
+                    )
+                }
+            }
+
+            Spacer(
+                modifier = Modifier.height(24.dp)
+            )
+
+            PrimaryButton(
+                text = if (routeStarted) {
+                    "Route Started ✓"
+                } else {
+                    "Route Me to the Store"
+                },
+                onClick = {
+                    routeStarted = true
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            SecondaryButton(
+                text =
+                    "View Jemma's Profile",
+                onClick = onPerson
+            )
+
+            Spacer(
+                modifier = Modifier.height(12.dp)
+            )
+
+            SecondaryButton(
+                text = "Back to Home",
+                onClick = onHome
+            )
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Recognition preview
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun RecognitionScreen(
+    person: PersonProfile,
+    onBack: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Color(0xFF33363D)
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp)
+                .clip(
+                    RoundedCornerShape(
+                        24.dp
+                    )
+                )
+                .background(
+                    Color.White.copy(
+                        alpha = 0.12f
+                    )
+                )
+                .padding(30.dp),
+            horizontalAlignment =
+                Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "GLASSES PREVIEW",
+                color = Color.White.copy(
+                    alpha = 0.62f
+                ),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            Text(
+                text = "Person recognized",
+                color = Color.White.copy(
+                    alpha = 0.8f
+                ),
+                fontSize = 16.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(18.dp)
+            )
+
+            PersonAvatar(
+                imageRes = person.imageRes,
+                imageUri = person.imageUri,
+                initials =
+                    initialsFor(person.name),
+                size = 86
+            )
+
+            Spacer(
+                modifier = Modifier.height(16.dp)
+            )
+
+            Text(
+                text = person.name,
+                color = Color.White,
+                fontSize = 38.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = person.relationship,
+                color = Color.White.copy(
+                    alpha = 0.78f
+                ),
+                fontSize = 19.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(10.dp)
+            )
+
+            Text(
+                text =
+                    "This is what the wearer would see through the glasses.",
+                color = Color.White.copy(
+                    alpha = 0.65f
+                ),
+                textAlign = TextAlign.Center,
+                fontSize = 13.sp
+            )
+
+            Spacer(
+                modifier = Modifier.height(26.dp)
+            )
+
+            OutlinedButton(
+                onClick = onBack,
+                border = BorderStroke(
+                    1.dp,
+                    Color.White.copy(
+                        alpha = 0.45f
+                    )
+                )
+            ) {
+                Text(
+                    text = "Back to Phone App",
+                    color = Color.White
+                )
+            }
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+// Reusable components
+// -----------------------------------------------------------------------------
+
+@Composable
+private fun AppHeader(
+    title: String,
+    onBack: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = 20.dp,
+                vertical = 18.dp
+            ),
+        verticalAlignment =
+            Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier.width(48.dp)
+        ) {
+            if (onBack != null) {
+                Text(
+                    text = "‹",
+                    fontSize = 38.sp,
+                    modifier =
+                        Modifier.clickable {
+                            onBack()
+                        }
+                )
+            }
+        }
+
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f),
+            textAlign = TextAlign.Center,
+            fontSize = 19.sp,
+            fontWeight = FontWeight.Bold
+        )
+
+        Spacer(
+            modifier = Modifier.width(48.dp)
+        )
+    }
+}
+
+
+@Composable
+private fun PrimaryButton(
+    text: String,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp),
+        shape =
+            RoundedCornerShape(16.dp),
+        colors =
+            ButtonDefaults.buttonColors(
+                containerColor = AppBlue
+            )
+    ) {
+        Text(
+            text = text,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+
+@Composable
+private fun SecondaryButton(
+    text: String,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp),
+        shape =
+            RoundedCornerShape(16.dp),
+        border = BorderStroke(
+            1.dp,
+            AppBorder
+        )
+    ) {
+        Text(
+            text = text,
+            color = AppBlue,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+
+@Composable
+private fun FieldLabel(
+    text: String
+) {
+    Text(
+        text = text,
+        color = AppBlue,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.fillMaxWidth()
+    )
+
+    Spacer(
+        modifier = Modifier.height(6.dp)
+    )
+}
+
+
+@Composable
+private fun PersonRow(
+    person: PersonProfile,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(
+                RoundedCornerShape(18.dp)
+            )
+            .background(AppCard)
+            .border(
+                1.dp,
+                AppBorder,
+                RoundedCornerShape(18.dp)
+            )
+            .clickable {
+                onClick()
+            }
+            .padding(16.dp),
+        verticalAlignment =
+            Alignment.CenterVertically
+    ) {
+        PersonAvatar(
+            imageRes = person.imageRes,
+            imageUri = person.imageUri,
+            initials =
+                initialsFor(person.name)
+        )
+
+        Spacer(
+            modifier = Modifier.width(14.dp)
+        )
+
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = person.name,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = person.relationship,
+                color = AppSecondary,
+                fontSize = 14.sp
+            )
+
+            if (person.memories.isNotEmpty()) {
+                Spacer(
+                    modifier =
+                        Modifier.height(3.dp)
+                )
+
+                Text(
+                    text =
+                        "${person.memories.size} saved " +
+                        if (
+                            person.memories.size == 1
+                        ) {
+                            "memory"
+                        } else {
+                            "memories"
+                        },
+                    color = AppBlue,
+                    fontSize = 11.sp
+                )
+            }
+        }
+
+        Text(
+            text = "›",
+            fontSize = 28.sp,
+            color = AppSecondary
+        )
+    }
+}
+
+
+@Composable
+private fun PersonAvatar(
+    imageRes: Int? = null,
+    imageUri: String? = null,
+    initials: String,
+    size: Int = 58
+) {
+    Box(
+        modifier = Modifier
+            .size(size.dp)
+            .clip(CircleShape)
+            .background(AppBlue),
+        contentAlignment = Alignment.Center
+    ) {
+        when {
+            imageUri != null -> {
+                UriImage(
+                    uriString = imageUri,
+                    modifier =
+                        Modifier.fillMaxSize()
+                )
+            }
+
+            imageRes != null -> {
+                Image(
+                    painter =
+                        painterResource(
+                            imageRes
+                        ),
+                    contentDescription = null,
+                    modifier =
+                        Modifier.fillMaxSize(),
+                    contentScale =
+                        ContentScale.Crop
+                )
+            }
+
+            else -> {
+                Text(
+                    text = initials,
+                    color = Color.White,
+                    fontSize =
+                        if (initials == "+") {
+                            34.sp
+                        } else {
+                            18.sp
+                        },
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun UriImage(
+    uriString: String,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+
+    val bitmap = remember(
+        uriString
+    ) {
+        try {
+            context
+                .contentResolver
+                .openInputStream(
+                    Uri.parse(uriString)
+                )
+                ?.use {
+                    BitmapFactory
+                        .decodeStream(it)
+                        ?.asImageBitmap()
+                }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = null,
+            modifier = modifier,
+            contentScale = ContentScale.Crop
+        )
+    } else {
+        Box(
+            modifier = modifier
+                .background(AppBlue),
+            contentAlignment =
+                Alignment.Center
+        ) {
+            Text(
+                text = "?",
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+
+@Composable
+private fun InfoCard(
+    label: String,
+    text: String
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape =
+            RoundedCornerShape(18.dp),
+        color = AppCard,
+        border = BorderStroke(
+            1.dp,
+            AppBorder
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(
+                18.dp
+            )
+        ) {
+            Text(
+                text = label,
+                color = AppBlue,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(8.dp)
+            )
+
+            Text(
+                text = text,
+                fontSize = 15.sp,
+                lineHeight = 21.sp
+            )
+        }
+    }
+}
+
+
+@Composable
+private fun MemoryCard(
+    memory: MemoryItem,
+    alreadyInGrocery: Boolean,
+    onAction: () -> Unit,
+    onOpenGrocery: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape =
+            RoundedCornerShape(18.dp),
+        border = BorderStroke(
+            1.dp,
+            AppBorder
+        ),
+        color = Color.White
+    ) {
+        Column(
+            modifier = Modifier.padding(
+                17.dp
+            )
+        ) {
+            Text(
+                text = "APP EXAMPLE · NOT SYNCED",
+                color = AppBlue,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(7.dp)
+            )
+
+            Text(
+                text = memory.text,
+                fontSize = 16.sp,
+                lineHeight = 22.sp,
+                fontWeight = FontWeight.Medium
+            )
+
+            Spacer(
+                modifier = Modifier.height(9.dp)
+            )
+
+            Text(
+                text = memory.context,
+                color = AppSecondary,
+                fontSize = 12.sp
+            )
+
+            if (
+                memory.grocerySuggestion != null
+            ) {
+                Spacer(
+                    modifier =
+                        Modifier.height(14.dp)
+                )
+
+                if (alreadyInGrocery) {
+                    OutlinedButton(
+                        onClick = onOpenGrocery,
+                        modifier =
+                            Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text =
+                                "Added to Grocery List ✓"
+                        )
+                    }
+                } else {
+                    Button(
+                        onClick = onAction,
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        colors =
+                            ButtonDefaults
+                                .buttonColors(
+                                    containerColor =
+                                        AppBlue
+                                )
+                    ) {
+                        Text(
+                            text =
+                                "+ Add to Grocery List"
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun GroceryRow(
+    entry: GroceryEntry,
+    checked: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(
+                RoundedCornerShape(15.dp)
+            )
+            .background(
+                if (entry.source != null) {
+                    AppLightBlue
+                } else {
+                    AppCard
+                }
+            )
+            .clickable {
+                onClick()
+            }
+            .padding(15.dp),
+        verticalAlignment =
+            Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(21.dp)
+                .clip(CircleShape)
+                .border(
+                    1.5.dp,
+                    if (checked) {
+                        AppBlue
+                    } else {
+                        Color(0xFFBCC2CC)
+                    },
+                    CircleShape
+                )
+                .background(
+                    if (checked) {
+                        AppBlue
+                    } else {
+                        Color.Transparent
+                    }
+                ),
+            contentAlignment =
+                Alignment.Center
+        ) {
+            if (checked) {
+                Text(
+                    text = "✓",
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Spacer(
+            modifier = Modifier.width(12.dp)
+        )
+
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = entry.text,
+                fontSize = 15.sp,
+                fontWeight =
+                    if (
+                        entry.source != null
+                    ) {
+                        FontWeight.SemiBold
+                    } else {
+                        FontWeight.Normal
+                    },
+                color =
+                    if (checked) {
+                        AppSecondary
+                    } else {
+                        Color(0xFF29313D)
+                    }
+            )
+
+            if (entry.source != null) {
+                Spacer(
+                    modifier =
+                        Modifier.height(3.dp)
+                )
+
+                Text(
+                    text = entry.source,
+                    color = AppBlue,
+                    fontSize = 11.sp
+                )
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun SystemCard(companion: CompanionFeed) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape =
+            RoundedCornerShape(18.dp),
+        color = AppCard,
+        border = BorderStroke(
+            1.dp,
+            AppBorder
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(
+                18.dp
+            )
+        ) {
+            Text(
+                text = "System Status",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(
+                    15.dp
+                )
+            )
+
+            StatusRow(
+                label = "Aria Glasses",
+                value = when {
+                    !companion.online -> "Mac offline"
+                    companion.status.optString("source") != "aria" -> "Not running Aria"
+                    companion.status.optJSONObject("bridge")?.optBoolean("ready") == true -> "Streaming"
+                    else -> "Not ready"
+                }
+            )
+
+            Spacer(
+                modifier = Modifier.height(
+                    11.dp
+                )
+            )
+
+            LocalAiStatusRow()
+
+            Spacer(
+                modifier = Modifier.height(
+                    11.dp
+                )
+            )
+
+            StatusRow(
+                label = "Long-term Memory",
+                value = when {
+                    !companion.online -> "Unavailable"
+                    companion.status.optBoolean("memory_enabled") -> "Active"
+                    else -> "Disabled"
+                }
+            )
+
+            Spacer(modifier = Modifier.height(11.dp))
+
+            StatusRow(
+                label = "Assistant",
+                value = if (companion.online)
+                    companion.status.optString("assistant", "Unknown") else "Offline"
+            )
+        }
+    }
+}
+
+
+@Composable
+private fun LocalAiStatusRow() {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Box(
+            modifier = Modifier.padding(top = 6.dp).size(9.dp)
+                .clip(CircleShape).background(AppGreen)
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "On-device AI", fontSize = 14.sp,
+                fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false
+            )
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(
+                text = "Gemma E4B", color = AppSecondary,
+                fontSize = 14.sp, maxLines = 1, softWrap = false
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusRow(
+    label: String,
+    value: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment =
+            Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(9.dp)
+                .clip(CircleShape)
+                .background(AppGreen)
+        )
+
+        Spacer(
+            modifier = Modifier.width(10.dp)
+        )
+
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            fontSize = 14.sp,
+            maxLines = 1
+        )
+
+        Text(
+            text = value,
+            color = AppSecondary,
+            fontSize = 14.sp,
+            maxLines = 1,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+
+@Composable
+private fun HowRow(
+    number: String,
+    title: String,
+    description: String
+) {
+    Row(
+        verticalAlignment =
+            Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(AppBlue),
+            contentAlignment =
+                Alignment.Center
+        ) {
+            Text(
+                text = number,
+                color = Color.White,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Spacer(
+            modifier = Modifier.width(12.dp)
+        )
+
+        Column {
+            Text(
+                text = title,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = description,
+                color = AppSecondary,
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+
+@Composable
+private fun FeatureCard(
+    title: String,
+    description: String,
+    action: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(
+                RoundedCornerShape(18.dp)
+            )
+            .background(Color.White)
+            .border(
+                1.dp,
+                AppBorder,
+                RoundedCornerShape(18.dp)
+            )
+            .clickable {
+                onClick()
+            }
+            .padding(17.dp),
+        verticalAlignment =
+            Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f)
+        ) {
+            Text(
+                text = title,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Spacer(
+                modifier = Modifier.height(4.dp)
+            )
+
+            Text(
+                text = description,
+                color = AppSecondary,
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+        }
+
+        Spacer(
+            modifier = Modifier.width(12.dp)
+        )
+
+        Column(
+            horizontalAlignment =
+                Alignment.End
+        ) {
+            Text(
+                text = action,
+                color = AppBlue,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = "›",
+                color = AppBlue,
+                fontSize = 28.sp
+            )
+        }
+    }
+}
+
+
+private fun initialsFor(
+    name: String
+): String {
+    val pieces =
+        name.trim()
+            .split(
+                Regex("\\s+")
+            )
+            .filter {
+                it.isNotBlank()
+            }
+
+    if (pieces.isEmpty()) {
+        return "?"
+    }
+
+    return pieces
+        .take(2)
+        .joinToString("") {
+            it.first()
+                .uppercaseChar()
+                .toString()
+        }
+}

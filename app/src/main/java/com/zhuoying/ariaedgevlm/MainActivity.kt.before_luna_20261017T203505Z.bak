@@ -1,0 +1,796 @@
+package com.zhuoying.ariaedgevlm
+
+import android.content.Intent
+import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Bundle
+import android.os.SystemClock
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.zhuoying.ariaedgevlm.ui.theme.AriaEdgeVLMTheme
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+class MainActivity : ComponentActivity() {
+
+    companion object {
+        const val ACTION_RUN_BRIDGE =
+            "com.zhuoying.ariaedgevlm.RUN_BRIDGE"
+
+        const val MODEL_E2B = "gemma4_e2b"
+        const val MODEL_E4B = "gemma4_e4b"
+    }
+
+    data class ModelSpec(
+        val key: String,
+        val displayName: String,
+        val fileName: String
+    )
+
+    private val models = mapOf(
+        MODEL_E2B to ModelSpec(
+            key = MODEL_E2B,
+            displayName = "Gemma 4 E2B",
+            fileName = "gemma-4-E2B-it.litertlm"
+        ),
+        MODEL_E4B to ModelSpec(
+            key = MODEL_E4B,
+            displayName = "Gemma 4 E4B",
+            fileName = "gemma-4-E4B-it.litertlm"
+        )
+    )
+
+    private var engine: Engine? = null
+    private var loadedModelKey: String? = null
+
+    private var status by mutableStateOf("Model not loaded")
+    private var prompt by mutableStateOf(
+        "What is in front of me? Answer briefly."
+    )
+    private var answer by mutableStateOf("")
+
+    private var inferenceRunning = false
+    // Frame history belongs to the PHONE, not to the Mac transport bridge.
+    private val phoneTemporalMemory by lazy { PhoneTemporalMemory(applicationContext) }
+    private val liveJpegInlet by lazy { PhoneJpegIngress(phoneTemporalMemory) }
+    // BLOCK11_CONVERSATION: short, recent text history, private to Galaxy.
+    private val phoneConversationMemory by lazy { PhoneConversationMemory.get(applicationContext) }
+    // BLOCK12_EXPLICIT_MEMORY: local durable notes, separate from 15s frame buffer.
+    private val phoneLongTermMemory by lazy { PhoneLongTermMemory.get(applicationContext) }
+    // ORIGINAL_MEMORY12B: matches integration/memory_writer.py 30s clip contract.
+    private val originalClips by lazy { PhoneOriginalMemoryClips.get(applicationContext) }
+    private var originalClipInferenceActive = false
+    private var queuedVoice: Pair<String, (String) -> Unit>? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        liveJpegInlet.onStoredFrame = { onOriginalMemoryFrame() }
+
+        setContent {
+            AriaEdgeVLMTheme {
+                OnboardingApp(
+                    status = status,
+                    answer = answer,
+                    onAskAI = {
+                        runBridgeInference()
+                    },
+                    onLocalVisual = { text, uri, done ->
+                        runLocalVisual(text, uri, done)
+                    },
+                    onLocalTemporal = { text, uri, done ->
+                        runLocalTemporal(text, uri, done)
+                    },
+                    liveInlet = liveJpegInlet,
+                    onLiveQuestion = { text, done ->
+                        runFromLiveBuffer(text, done)
+                    }
+                )
+            }
+        }
+
+        if (intent?.action == ACTION_RUN_BRIDGE) {
+            runBridgeInference()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+
+        if (intent.action == ACTION_RUN_BRIDGE) {
+            runBridgeInference()
+        }
+    }
+
+    private fun getModelSpec(modelKey: String): ModelSpec {
+        return models[modelKey]
+            ?: error("Unknown model key: $modelKey")
+    }
+
+    private suspend fun ensureModelLoaded(
+        requestedModelKey: String
+    ): Boolean {
+
+        val spec = try {
+            getModelSpec(requestedModelKey)
+        } catch (e: Exception) {
+            status = "Unknown model: $requestedModelKey"
+            return false
+        }
+
+        if (
+            engine != null &&
+            loadedModelKey == requestedModelKey
+        ) {
+            status = "${spec.displayName} already ready on GPU"
+            return true
+        }
+
+        status = "Loading ${spec.displayName}..."
+
+        val modelFile = File(
+            filesDir,
+            "models/${spec.fileName}"
+        )
+
+        if (!modelFile.exists()) {
+            status =
+                "Model file not found:\n${modelFile.absolutePath}"
+            return false
+        }
+
+        return try {
+            val newEngine = withContext(Dispatchers.IO) {
+                val config = EngineConfig(
+                    modelPath = modelFile.absolutePath,
+                    backend = Backend.GPU(),
+                    visionBackend = Backend.GPU(),
+                    cacheDir = cacheDir.absolutePath
+                )
+
+                Engine(config).also {
+                    it.initialize()
+                }
+            }
+
+            withContext(Dispatchers.IO) {
+                try {
+                    engine?.close()
+                } catch (_: Exception) {
+                }
+            }
+
+            engine = newEngine
+            loadedModelKey = requestedModelKey
+
+            status = "${spec.displayName} ready on GPU"
+
+            true
+
+        } catch (e: Exception) {
+            status =
+                "Model load failed (${spec.displayName}):\n${e.message}"
+            false
+        }
+    }
+
+    private fun readRequestedModel(
+        bridgeDir: File
+    ): String {
+
+        val modelFile = File(
+            bridgeDir,
+            "model.txt"
+        )
+
+        if (!modelFile.exists()) {
+            return loadedModelKey ?: MODEL_E2B
+        }
+
+        val value = try {
+            modelFile.readText()
+                .trim()
+                .lowercase()
+        } catch (_: Exception) {
+            ""
+        }
+
+        return when (value) {
+            MODEL_E2B -> MODEL_E2B
+            MODEL_E4B -> MODEL_E4B
+            else -> loadedModelKey ?: MODEL_E2B
+        }
+    }
+
+    private fun runBridgeInference() {
+
+        if (inferenceRunning) {
+            status = "Inference already running."
+            return
+        }
+
+        lifecycleScope.launch {
+
+            inferenceRunning = true
+
+            try {
+                val bridgeDir = File(
+                    filesDir,
+                    "bridge"
+                )
+
+                if (!bridgeDir.exists()) {
+                    bridgeDir.mkdirs()
+                }
+
+                val imageFile = File(
+                    bridgeDir,
+                    "input.jpg"
+                )
+
+                val promptFile = File(
+                    bridgeDir,
+                    "prompt.txt"
+                )
+
+                val outputFile = File(
+                    bridgeDir,
+                    "output.txt"
+                )
+
+                val latencyFile = File(
+                    bridgeDir,
+                    "latency.txt"
+                )
+
+                val activeModelFile = File(
+                    bridgeDir,
+                    "active_model.txt"
+                )
+
+                if (!imageFile.exists()) {
+                    status =
+                        "input.jpg not found:\n${imageFile.absolutePath}"
+                    return@launch
+                }
+
+                if (!promptFile.exists()) {
+                    status =
+                        "prompt.txt not found:\n${promptFile.absolutePath}"
+                    return@launch
+                }
+
+                val finalPrompt =
+                    withContext(Dispatchers.IO) {
+                        promptFile.readText().trim()
+                    }
+
+                if (finalPrompt.isBlank()) {
+                    status = "Prompt is empty."
+                    return@launch
+                }
+
+                val requestedModelKey =
+                    withContext(Dispatchers.IO) {
+                        readRequestedModel(bridgeDir)
+                    }
+
+                val loaded =
+                    ensureModelLoaded(requestedModelKey)
+
+                if (!loaded) {
+                    withContext(Dispatchers.IO) {
+                        outputFile.writeText(
+                            "ERROR: model could not be loaded"
+                        )
+                    }
+                    return@launch
+                }
+
+                val currentEngine = engine
+
+                if (currentEngine == null) {
+                    status = "Model engine unavailable."
+                    return@launch
+                }
+
+                val spec =
+                    getModelSpec(requestedModelKey)
+
+                prompt = finalPrompt
+                answer = ""
+
+                status =
+                    "Running ${spec.displayName} inference..."
+
+                val startTime =
+                    System.nanoTime()
+
+                val responseString =
+                    withContext(Dispatchers.IO) {
+
+                        currentEngine
+                            .createConversation()
+                            .use { conversation ->
+
+                                val response =
+                                    conversation.sendMessage(
+                                        Contents.of(
+                                            Content.ImageFile(
+                                                imageFile.absolutePath
+                                            ),
+                                            Content.Text(
+                                                finalPrompt
+                                            )
+                                        )
+                                    )
+
+                                response.toString()
+                            }
+                    }
+
+                val elapsedSeconds =
+                    (System.nanoTime() - startTime) /
+                        1_000_000_000.0
+
+                answer = responseString
+
+                status =
+                    "${spec.displayName} done in " +
+                        "%.3f s".format(elapsedSeconds)
+
+                withContext(Dispatchers.IO) {
+
+                    outputFile.writeText(
+                        responseString
+                    )
+
+                    latencyFile.writeText(
+                        "%.6f".format(elapsedSeconds)
+                    )
+
+                    activeModelFile.writeText(
+                        requestedModelKey
+                    )
+                }
+
+            } catch (e: Exception) {
+
+                answer = ""
+
+                status =
+                    "Inference failed:\n${e.message}"
+
+                try {
+                    val bridgeDir = File(
+                        filesDir,
+                        "bridge"
+                    )
+
+                    File(
+                        bridgeDir,
+                        "output.txt"
+                    ).writeText(
+                        "ERROR: ${e.message}"
+                    )
+                } catch (_: Exception) {
+                }
+
+            } finally {
+                inferenceRunning = false
+            }
+        }
+    }
+
+    /** Native WHICH SMALL execution; separate from ADB but shares the SAME GPU engine. */
+    private fun runLocalVisual(question: String, photoUri: Uri, onComplete: (String) -> Unit) {
+        if (inferenceRunning) {
+            onComplete("ERROR: Another model inference is already running.")
+            return
+        }
+        inferenceRunning = true
+        lifecycleScope.launch {
+            var frame: File? = null
+            try {
+                // Photo picker returns a content:// URI, not a model-readable file path.
+                // Decode downsampled into a real JPEG owned by this app.
+                frame = withContext(Dispatchers.IO) {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    val boundsStream = contentResolver.openInputStream(photoUri)
+                        ?: error("Cannot open selected photo")
+                    boundsStream.use { BitmapFactory.decodeStream(it, null, bounds) }
+                    val maxDimension = maxOf(bounds.outWidth, bounds.outHeight)
+                    require(maxDimension > 0) { "Selected file is not a readable image" }
+                    var downsample = 1
+                    while (maxDimension / downsample > 1600) downsample *= 2
+                    val options = BitmapFactory.Options().apply { inSampleSize = downsample }
+                    val bitmap = contentResolver.openInputStream(photoUri)?.use {
+                        BitmapFactory.decodeStream(it, null, options)
+                    } ?: error("Cannot decode selected photo")
+                    try {
+                        File(cacheDir, "which_photo_${System.nanoTime()}.jpg").also { file ->
+                            file.outputStream().use { out ->
+                                check(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)) {
+                                    "Cannot encode photo as JPEG"
+                                }
+                            }
+                        }
+                    } finally {
+                        bitmap.recycle()
+                    }
+                }
+                check(ensureModelLoaded(MODEL_E4B)) { status }
+                val currentEngine = engine ?: error("E4B engine unavailable")
+                status = "Running native WHICH → E4B..."
+                val started = System.nanoTime()
+                val visualPath = frame?.absolutePath ?: error("Image file missing")
+                val result = withContext(Dispatchers.IO) {
+                    currentEngine.createConversation().use { conversation ->
+                        conversation.sendMessage(
+                            Contents.of(Content.ImageFile(visualPath),
+                                Content.Text(PhoneConversationMemory.shortAnswerInstruction(question) +
+                                    "\nCurrent question: " + question))
+                        ).toString()
+                    }
+                }
+                val seconds = (System.nanoTime() - started) / 1e9
+                status = "E4B completed in ${"%.2f".format(seconds)} s"
+                answer = result
+                onComplete(result)
+            } catch (e: Exception) {
+                val message = "ERROR: ${e.message ?: e.javaClass.simpleName}"
+                status = message
+                onComplete(message)
+            } finally {
+                withContext(Dispatchers.IO) { frame?.delete() }
+                inferenceRunning = false
+            }
+        }
+    }
+
+    /**
+     * Block 4: choose a recorded clip, keep only the final 15s at ~2fps ON PHONE,
+     * sample 4/6 frames and feed one annotated storyboard to the existing E4B.
+     * This is experimental storyboard reasoning, NOT original cloud multi-frame.
+     */
+    private fun runLocalTemporal(question: String, videoUri: Uri, onComplete: (String) -> Unit) {
+        if (inferenceRunning) {
+            onComplete("ERROR: Another model inference is already running.")
+            return
+        }
+        inferenceRunning = true
+        lifecycleScope.launch {
+            var storyboard: File? = null
+            try {
+                status = "Extracting the most recent 15 seconds on Galaxy..."
+                val history = phoneTemporalMemory.loadVideoReplay(videoUri)
+                val n = if (PhoneTemporalMemory.isOrderingQuestion(question)) 6 else 4
+                val sampled = PhoneTemporalMemory.uniformSample(history.frames, n)
+                check(sampled.size >= 2) { "Not enough video frames" }
+                storyboard = phoneTemporalMemory.createStoryboard(sampled)
+
+                check(ensureModelLoaded(MODEL_E4B)) { status }
+                val currentEngine = engine ?: error("E4B engine unavailable")
+                val promptForE4B =
+                    PhoneConversationMemory.shortAnswerInstruction(question) + "\n" +
+                    "This image is a chronological storyboard from a recorded video. " +
+                    "Read panels left to right, top to bottom. " +
+                    "The panel timestamps refer to the original video. " +
+                    "Describe only motion or events visibly supported by these snapshots; " +
+                    "do not infer unshown actions. If uncertain, say so. " +
+                    "Question: " + question
+                status = "Running Galaxy E4B on ${sampled.size} temporal frames..."
+                val started = System.nanoTime()
+                val path = storyboard?.absolutePath ?: error("Storyboard was not created")
+                val result = withContext(Dispatchers.IO) {
+                    currentEngine.createConversation().use { conversation ->
+                        conversation.sendMessage(
+                            Contents.of(Content.ImageFile(path), Content.Text(promptForE4B))
+                        ).toString()
+                    }
+                }
+                val seconds = (System.nanoTime() - started) / 1e9
+                status = "Temporal storyboard inference completed in ${"%.2f".format(seconds)} s"
+                answer = result
+                val clipLength = (history.durationMs - history.startMs) / 1000.0
+                onComplete(
+                    "Phone stored ${history.frames.size} frames from the last " +
+                    "${"%.1f".format(clipLength)}s of the VIDEO; " +
+                    "E4B saw ${sampled.size} chronological panels. " +
+                    "This is a recorded-video replay, not live Aria memory.\n\n" + result
+                )
+            } catch (e: Exception) {
+                val message = "ERROR: ${e.message ?: e.javaClass.simpleName}"
+                status = message
+                onComplete(message)
+            } finally {
+                withContext(Dispatchers.IO) { storyboard?.delete() }
+                inferenceRunning = false
+            }
+        }
+    }
+
+    /** Block 5: phone-owned live buffer, router and existing LiteRT-LM E4B. */
+    // ATLAS_STANDING_DEMO_20261016: intercept registered standing commands before normal WHICH routing.
+    override fun onResume() {
+        super.onResume()
+        PhoneStandingReminders.start(applicationContext)
+    }
+
+    override fun onPause() {
+        PhoneStandingReminders.stop()
+        super.onPause()
+    }
+
+    // ATLAS_DEMO_UI_V1: reflect real text/voice question and actual answer in demo view.
+    private fun runFromLiveBuffer(question: String, originalDone: (String) -> Unit) {
+        AtlasDemoEvents.onQuestion(question)
+        val done: (String) -> Unit = { result ->
+            AtlasDemoEvents.onAnswer(result)
+            originalDone(result)
+        }
+        if (PhoneStandingReminders.tryHandle(question, done)) return
+        if (inferenceRunning) {
+            if (originalClipInferenceActive && queuedVoice == null) {
+                queuedVoice = question to done
+                return
+            }
+            done("ERROR: Another inference is already running")
+            return
+        }
+        inferenceRunning = true
+        lifecycleScope.launch {
+            val temporary = ArrayList<File>()
+            try {
+                // Original memory priority: explicit user statements first, automatic
+                // clip observations second; only then recent Q&A and WHICH.
+                val durableMemoryAnswer = phoneLongTermMemory.handle(question)
+                val missingExplicit = durableMemoryAnswer?.startsWith("I don't have a saved location") == true
+                if (durableMemoryAnswer != null && !missingExplicit) {
+                    phoneConversationMemory.record(question, durableMemoryAnswer, question, "MEMORY")
+                    done("Route: MEMORY (explicit owner note)\n\n$durableMemoryAnswer")
+                    return@launch
+                }
+                // ORIGINAL_SPATIAL: unchanged spatial_memory engine running on phone.
+                // Attach last-seen object JPEG before falling back to unstructured clips.
+                val spatial = withContext(Dispatchers.IO) {
+                    PhoneOriginalSpatialRelay.lookup(question, cacheDir)
+                }
+                if (spatial != null) {
+                    try {
+                        check(ensureModelLoaded(MODEL_E4B)) { status }
+                        val model = engine ?: error("E4B unavailable")
+                        val instruction = PhoneConversationMemory.shortAnswerInstruction(question) +
+                            "\nThis is the LAST camera frame where YOLO detected a " + spatial.label +
+                            " at " + spatial.time + ". Answer where it was visible RELATIVE TO" +
+                            " scene landmarks. Do not claim it is still there. Do not assume" +
+                            " that this is the user's specific object if multiple are possible." +
+                            "\nQuestion: " + question
+                        val response = withContext(Dispatchers.IO) {
+                            model.createConversation().use { conversation ->
+                                conversation.sendMessage(
+                                    Contents.of(Content.ImageFile(spatial.jpeg.absolutePath),
+                                        Content.Text(instruction))
+                                ).toString()
+                            }
+                        }
+                        phoneConversationMemory.record(question, response, question, "MEMORY")
+                        done("Route: MEMORY (original SpatialMemory / YOLO evidence)\n" +
+                            "Last seen: " + spatial.time + "\n\n" + response)
+                    } catch (e: Exception) {
+                        done("MEMORY evidence interpretation failed: ${e.message}")
+                    } finally {
+                        withContext(Dispatchers.IO) { spatial.jpeg.delete() }
+                    }
+                    return@launch
+                }
+                val observed = originalClips.lookup(question)
+                val memoryAnswer = observed ?: durableMemoryAnswer
+                if (memoryAnswer != null) {
+                    phoneConversationMemory.record(question, memoryAnswer, question, "MEMORY")
+                    done("Route: MEMORY (Galaxy memory)\n\n$memoryAnswer")
+                    return@launch
+                }
+                // BLOCK11_CONVERSATION: recall completed dialogue without camera/model.
+                val recalled = phoneConversationMemory.recall(question)
+                if (recalled != null) {
+                    done("Route: MEMORY (recent conversation on Galaxy)\n\n$recalled")
+                    return@launch
+                }
+                // Elliptical followups like "tell me more" inherit the prior routing
+                // question, while keeping the actual new question in the model prompt.
+                val routeQuestion = phoneConversationMemory.routingQuestion(question)
+                val routed = withContext(Dispatchers.Default) {
+                    NativeWhichRouter.route(applicationContext, routeQuestion)
+                }
+                val high = routed.optString("high_level")
+                val backend = routed.optString("backend")
+                val label = if (high == "DIRECT_VISUAL") "$high → $backend" else high
+                if (high == "DIRECT_VISUAL" && backend != "SMALL") {
+                    done("Route: $label\nLARGE cloud executor is not connected. " +
+                        "No silent E4B fallback; try a SMALL-route question for testing.")
+                    return@launch
+                }
+                if (high != "DIRECT_VISUAL" && high != "TEMPORAL") {
+                    done("Route: $label\nThis backend is not connected yet.")
+                    return@launch
+                }
+                val recent = phoneTemporalMemory.recentLiveFrames()
+                require(recent.isNotEmpty()) { "No received frames. Start the receiver and Mac sender." }
+                val ageMs = SystemClock.elapsedRealtime() - recent.last().timeMs
+                require(ageMs in 0..3000) { "Newest frame is stale (${ageMs}ms). Keep the Mac sender running." }
+
+                var modelInput: File
+                val promptText: String
+                if (high == "TEMPORAL") {
+                    val n = if (PhoneTemporalMemory.isOrderingQuestion(question)) 6 else 4
+                    val sample = PhoneTemporalMemory.uniformSample(recent, n)
+                    require(sample.size >= 2) { "Need 2 recent frames for temporal inference" }
+                    val copied = withContext(Dispatchers.IO) {
+                        sample.mapIndexed { index, original ->
+                            val file = File(cacheDir, "live_snapshot_${System.nanoTime()}_$index.jpg")
+                            original.image.copyTo(file, overwrite = true)
+                            temporary.add(file)
+                            PhoneTemporalFrame(original.timeMs - sample.first().timeMs, file)
+                        }
+                    }
+                    modelInput = phoneTemporalMemory.createStoryboard(copied)
+                    temporary.add(modelInput)
+                    val evidence = "This is a time-ordered storyboard of recent frames received " +
+                        "from a Mac sensor bridge (2 fps, max 15 seconds). " +
+                        "Read panels left-to-right and top-to-bottom. " +
+                        "Only infer motion visibly supported by the snapshots; " +
+                        "do not invent events between them."
+                    promptText = phoneConversationMemory.prompt(question, evidence)
+                } else {
+                    modelInput = withContext(Dispatchers.IO) {
+                        File(cacheDir, "live_visual_${System.nanoTime()}.jpg").also {
+                            recent.last().image.copyTo(it, overwrite = true)
+                        }
+                    }
+                    temporary.add(modelInput)
+                    promptText = phoneConversationMemory.prompt(question,
+                        "Use the current camera frame to answer the current question.")
+                }
+
+                check(ensureModelLoaded(MODEL_E4B)) { status }
+                val activeEngine = engine ?: error("Local E4B engine unavailable")
+                status = "Running Galaxy E4B from $label..."
+                val started = System.nanoTime()
+                val response = withContext(Dispatchers.IO) {
+                    activeEngine.createConversation().use { conversation ->
+                        conversation.sendMessage(
+                            Contents.of(Content.ImageFile(modelInput.absolutePath), Content.Text(promptText))
+                        ).toString()
+                    }
+                }
+                val latency = (System.nanoTime() - started) / 1e9
+                status = "Phone live-buffer inference finished"
+                answer = response
+                phoneConversationMemory.record(question, response, routeQuestion, label)
+                done("Route: $label\nSource: continuous USB frames, ${recent.size} stored in " +
+                    "15s Galaxy buffer. No Aria required for prerecorded replay. " +
+                    "E4B inference ${"%.2f".format(java.util.Locale.US, latency)}s.\n\n" + response)
+            } catch (e: Exception) {
+                val message = "ERROR: ${e.message ?: e.javaClass.simpleName}"
+                status = message
+                done(message)
+            } finally {
+                withContext(Dispatchers.IO) { temporary.forEach { it.delete() } }
+                inferenceRunning = false
+            }
+        }
+    }
+
+    // Called on UI thread by existing phone-side RGB receiver; no per-object setup.
+    private fun onOriginalMemoryFrame() {
+        val liveFrames = phoneTemporalMemory.recentLiveFrames()
+        liveFrames.lastOrNull()?.image?.let { PhoneOriginalSpatialRelay.offer(it) }
+        originalClips.acceptFrame(liveFrames)
+        processNextOriginalClip()
+    }
+
+    private fun processNextOriginalClip() {
+        if (inferenceRunning || originalClipInferenceActive) return
+        val clip = originalClips.dequeue() ?: return
+        inferenceRunning = true
+        originalClipInferenceActive = true
+        lifecycleScope.launch {
+            var storyboard: File? = null
+            try {
+                // ORIGINAL_MEMORY12B1_MOTION_AUDIT: decode/analyze thumbnails off UI thread.
+                val analysis = withContext(Dispatchers.Default) { originalClips.analyze(clip) }
+                if (analysis.idle) {
+                    originalClips.skippedClip(
+                        "30s clip idle: mid-motion=${"%.1f".format(analysis.peakDiff)}, " +
+                        "end=${"%.1f".format(analysis.endDiff)}")
+                    return@launch
+                }
+                val selected = analysis.chosen
+                // Storyboard captions must be clip-relative seconds, not epoch seconds.
+                val forStoryboard = selected.map {
+                    PhoneTemporalFrame((it.timeMs - clip.startWallMs).coerceAtLeast(0L), it.image)
+                }
+                storyboard = phoneTemporalMemory.createStoryboard(forStoryboard)
+                check(ensureModelLoaded(MODEL_E4B)) { status }
+                val model = engine ?: error("E4B unavailable")
+                // Same fields and task definitions as ORIGINAL integration/memory_writer.py.
+                // Missing phone-side face IDs / StreamMeCo graph are not invented.
+                val instruction = """You will be given chronological frames from approximately 30 seconds
+of first-person video recorded by wearable AI glasses. The camera wearer is the
+person wearing the glasses and is usually not visible except for their hands.
+Your task consists of two parts:
+1. Video Description: describe the events and facts of this clip. Each string is
+one atomic event or fact. Call the wearer 'the camera wearer'. Mention where
+objects are picked up, put down or moved, what is read or used and who is present.
+2. High-Level Conclusions: reasoning-based conclusions beyond surface
+observations (intentions, relationships, habits, identities), but avoid guessing.
+Output only a valid JSON object exactly shaped as:
+{"video_description":["..."],"high_level_conclusions":["..."]}
+Do not write statements about what is missing. Return empty lists when nothing
+meaningful happened. Only claim an object was placed if that is visually supported.
+Frames are ordered from earlier to later, left-to-right and top-to-bottom.
+IMPORTANT: Some panels are selected around brief visual changes, so inspect the
+BEFORE and AFTER of each hand/object interaction. Do not assume an object was
+placed if it merely disappears from view; state the uncertainty instead."""
+                val result = withContext(Dispatchers.IO) {
+                    model.createConversation().use { conv ->
+                        conv.sendMessage(Contents.of(Content.ImageFile(storyboard.absolutePath),
+                            Content.Text(instruction))).toString()
+                    }
+                }
+                originalClips.commit(clip, result, storyboard, selected)
+            } catch (e: Exception) {
+                originalClips.skippedClip("Original 30s clip failed: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                withContext(Dispatchers.IO) { storyboard?.delete() }
+                originalClips.release(clip)
+                originalClipInferenceActive = false
+                inferenceRunning = false
+                val queued = queuedVoice
+                queuedVoice = null
+                if (queued != null) runFromLiveBuffer(queued.first, queued.second)
+                else processNextOriginalClip()
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        liveJpegInlet.onStoredFrame = null
+        liveJpegInlet.stop()
+        try {
+            engine?.close()
+        } catch (_: Exception) {
+        }
+
+        engine = null
+        loadedModelKey = null
+
+        super.onDestroy()
+    }
+}

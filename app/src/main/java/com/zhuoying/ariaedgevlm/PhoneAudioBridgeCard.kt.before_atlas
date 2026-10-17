@@ -1,0 +1,131 @@
+package com.zhuoying.ariaedgevlm
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.speech.tts.TextToSpeech
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import java.util.Locale
+
+/** Block 7 manual voice test, embedded inside the existing Block 5 bridge card. */
+@Composable
+internal fun PhoneAudioBridgeCard(runLiveQuestion: PhoneLiveQuestionExecutor) {
+    val context = LocalContext.current
+    val ingress = remember { PhoneAudioIngress() }
+    val speech = remember { PhoneAriaSpeech(context.applicationContext) }
+    var transcript by remember { mutableStateOf("") }
+    var result by remember { mutableStateOf("") }
+    var state by remember { mutableStateOf("Idle") }
+    var busy by remember { mutableStateOf(false) }
+    var speakReady by remember { mutableStateOf(false) }
+    val tts = remember {
+        TextToSpeech(context.applicationContext) { code ->
+            speakReady = (code == TextToSpeech.SUCCESS)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            speech.cancel()
+            ingress.stop()
+            tts.stop()
+            tts.shutdown()
+        }
+    }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        state = if (granted) "Audio permission granted. Press Transcribe to test." else
+            "Audio permission not granted; Android ASR may require it."
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        HorizontalDivider()
+        Text("Block 7 · Aria Audio + WHEN (pilot)", style = MaterialTheme.typography.titleMedium)
+        Text("Mac forwards real Aria PCM; Galaxy buffers 12s. Tap Transcribe after saying " +
+            "'Hey Glass, what color is this?'. The on-device speech service may not " +
+            "support injected audio; this test does not silently substitute cloud ASR.",
+            style = MaterialTheme.typography.bodySmall)
+        Text("Audio: ${if (ingress.running) "ON" else "OFF"} · " +
+            "${ingress.receivedChunks} chunks · ${"%.1f".format(Locale.US, ingress.bufferedSeconds)}s " +
+            "· RMS ${"%.3f".format(Locale.US, ingress.level)}")
+        if (ingress.lastError.isNotBlank()) Text(ingress.lastError, color = MaterialTheme.colorScheme.error)
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { if (ingress.running) ingress.stop() else ingress.start() }
+        ) { Text(if (ingress.running) "Stop audio receiver" else "Start audio receiver (port 18766)") }
+        Button(
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                    permission.launch(Manifest.permission.RECORD_AUDIO)
+                } else {
+                    try {
+                        val captured = ingress.recentPcm(6)
+                        busy = true
+                        result = ""
+                        transcript = ""
+                        state = "Transcribing injected Aria PCM on Galaxy..."
+                        speech.start(captured) { recognized, error ->
+                            busy = false
+                            if (error != null) { state = error; return@start }
+                            val raw = recognized.orEmpty().trim()
+                            transcript = raw
+                            val question = PhoneAriaSpeech.activatedQuestion(raw)
+                            if (question == null) {
+                                state = "WHEN ignored (no clear 'Hey Glass' + question)."
+                            } else {
+                                state = "WHEN activated. Routing: $question"
+                                busy = true
+                                runLiveQuestion(question) { answer ->
+                                    result = answer
+                                    busy = false
+                                    state = "Finished. Output shown below."
+                                    if (speakReady && !answer.startsWith("ERROR:") &&
+                                        !answer.contains("not connected")) {
+                                        tts.language = Locale.US
+                                        tts.speak(answer.takeLast(1500), TextToSpeech.QUEUE_FLUSH,
+                                            null, "aria-answer")
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        busy = false
+                        state = "ERROR: ${e.message}"
+                    }
+                }
+            }
+        ) { Text(if (busy) "Working..." else "Transcribe 6s → WHEN → WHICH → Answer") }
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+            speech.cancel()
+            tts.stop()
+            busy = false
+            state = "Stopped speech / cancelled current recognition."
+        }) { Text("Stop speech / cancel ASR") }
+        Text("Status: $state", style = MaterialTheme.typography.bodySmall)
+        if (transcript.isNotBlank()) Text("Galaxy ASR: $transcript")
+        if (result.isNotBlank()) Text("Galaxy answer:\n$result")
+        Text("Test limitation: Android may ignore external PCM injection and use the phone " +
+            "microphone. Verify this before calling it Aria ASR. Automatic always-on " +
+            "wake detection and voice barge-in are NOT implemented in this block.",
+            style = MaterialTheme.typography.bodySmall)
+    }
+}

@@ -1,0 +1,50 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Android build
+.gradle/
+build/
+**/build/
+local.properties
+.idea/
+*.apk
+*.aab
+.DS_Store
+
+# API keys and credentials
+.env
+.env.*
+*.keystore
+*.jks
+*.pem
+*.key
+google-services.json
+luna.json
+
+# Models and personal data
+*.onnx
+*.tflite
+*.gguf
+*.safetensors
+*.pt
+*.sqlite
+*.sqlite3
+*.db
+*.zip
+
+# Local backups
+*_Backup_*/
+*_backup_*/
